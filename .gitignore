@@ -2,6 +2,7 @@
 .env.local
 *.log
 .codex-provider-*.json
+.local-db.json
 node_modules/
 .DS_Store
 Thumbs.db

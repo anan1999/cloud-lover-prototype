@@ -3,7 +3,7 @@ services:
     name: cloud-lover-prototype
     runtime: node
     plan: free
-    buildCommand: ""
+    buildCommand: "npm install"
     startCommand: "npm start"
     envVars:
       - key: NODE_ENV
@@ -16,6 +16,8 @@ services:
         value: "0"
       - key: ALLOWED_ORIGINS
         value: https://cloud-lover-prototype.onrender.com
+      - key: DATABASE_URL
+        sync: false
       - key: GEMINI_API_KEY
         sync: false
       - key: OPENROUTER_API_KEY

@@ -8,7 +8,9 @@ This is the fastest path to a real public URL your friends can use on mobile.
 https://render.com/deploy?repo=https://github.com/anan1999/cloud-lover-prototype
 ```
 
-Render will read `render.yaml`, create the web service, and ask you to fill the API keys. After deploy, it gives you a public `https://...onrender.com` URL that friends can open from phones.
+Render will read `render.yaml`, create the web service, and ask you to fill the API keys plus `DATABASE_URL`. After deploy, it gives you a public `https://...onrender.com` URL that friends can open from phones.
+
+Use Neon Free Postgres for `DATABASE_URL` so accounts and chat history do not disappear after a short trial window.
 
 ## 1. Rotate Keys First
 
@@ -52,6 +54,7 @@ NODE_ENV=production
 PROVIDER_ORDER=gemini,openrouter,nvidia,groq,mock
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
+DATABASE_URL=your_neon_postgres_connection_string
 
 GEMINI_API_KEY=your_new_key
 GEMINI_MODEL=gemini-2.5-flash

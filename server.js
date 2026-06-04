@@ -2,6 +2,7 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
+const crypto = require("node:crypto");
 
 loadLocalEnv();
 
@@ -18,6 +19,10 @@ const PROVIDER_COOLDOWN_MS = Number(process.env.PROVIDER_COOLDOWN_MS || 60_000);
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 120_000);
 const EXPOSE_DEBUG = process.env.EXPOSE_DEBUG === "1" || !IS_PROD;
 const ENABLE_PROVIDER_STATUS = process.env.ENABLE_PROVIDER_STATUS === "1" || !IS_PROD;
+const DATABASE_URL = process.env.DATABASE_URL;
+const SESSION_COOKIE = "cloud_lover_session";
+const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 1000 * 60 * 60 * 24 * 30);
+const PASSWORD_MIN_LENGTH = Number(process.env.PASSWORD_MIN_LENGTH || 8);
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -59,6 +64,9 @@ const mime = {
 const providerHealth = new Map();
 const responseCache = new Map();
 const rateBuckets = new Map();
+const localDbPath = path.join(ROOT, ".local-db.json");
+let pgPool = null;
+let dbReady = null;
 
 function loadLocalEnv() {
   const envPath = path.join(__dirname, ".env.local");
@@ -120,6 +128,7 @@ function corsHeaders(req) {
   if (!isAllowedOrigin(req, origin)) return {};
   return {
     "Access-Control-Allow-Origin": origin || "*",
+    "Access-Control-Allow-Credentials": "true",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Max-Age": "600"
@@ -132,6 +141,400 @@ function sendJson(req, res, status, data) {
     "Content-Type": "application/json; charset=utf-8"
   }));
   res.end(JSON.stringify(data, null, IS_PROD ? 0 : 2));
+}
+
+function readLocalDb() {
+  if (!fs.existsSync(localDbPath)) {
+    return { users: [], sessions: [], profiles: [], messages: [], memories: [] };
+  }
+  try {
+    return JSON.parse(fs.readFileSync(localDbPath, "utf8"));
+  } catch {
+    return { users: [], sessions: [], profiles: [], messages: [], memories: [] };
+  }
+}
+
+function writeLocalDb(db) {
+  fs.writeFileSync(localDbPath, JSON.stringify(db, null, 2));
+}
+
+async function getPgPool() {
+  if (!DATABASE_URL) return null;
+  if (pgPool) return pgPool;
+  const { Pool } = require("pg");
+  pgPool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: IS_PROD ? { rejectUnauthorized: false } : undefined
+  });
+  return pgPool;
+}
+
+async function queryDb(sql, params = []) {
+  const pool = await getPgPool();
+  if (!pool) return null;
+  return pool.query(sql, params);
+}
+
+async function initDb() {
+  if (!DATABASE_URL) {
+    const db = readLocalDb();
+    writeLocalDb(db);
+    return;
+  }
+  await queryDb(`
+    create table if not exists users (
+      id text primary key,
+      email text unique not null,
+      display_name text not null,
+      password_hash text not null,
+      salt text not null,
+      created_at timestamptz not null default now()
+    );
+    create table if not exists sessions (
+      token_hash text primary key,
+      user_id text not null references users(id) on delete cascade,
+      expires_at timestamptz not null,
+      created_at timestamptz not null default now()
+    );
+    create table if not exists profiles (
+      user_id text primary key references users(id) on delete cascade,
+      lover_name text not null default '澄',
+      user_name text not null default '你',
+      tone text not null default 'gentle',
+      intimacy integer not null default 42,
+      updated_at timestamptz not null default now()
+    );
+    create table if not exists messages (
+      id text primary key,
+      user_id text not null references users(id) on delete cascade,
+      role text not null,
+      content text not null,
+      safety text,
+      emotion text,
+      provider text,
+      created_at timestamptz not null default now()
+    );
+    create table if not exists memories (
+      id text primary key,
+      user_id text not null references users(id) on delete cascade,
+      content text not null,
+      created_at timestamptz not null default now()
+    );
+    create index if not exists messages_user_created_idx on messages(user_id, created_at);
+    create index if not exists memories_user_created_idx on memories(user_id, created_at);
+  `);
+}
+
+async function ensureDb() {
+  if (!dbReady) dbReady = initDb().catch(error => {
+    dbReady = null;
+    throw error;
+  });
+  return dbReady;
+}
+
+function uid() {
+  return crypto.randomUUID();
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
+  const hash = crypto.pbkdf2Sync(password, salt, 210000, 32, "sha256").toString("hex");
+  return { salt, hash };
+}
+
+function verifyPassword(password, user) {
+  const hashed = hashPassword(password, user.salt).hash;
+  return crypto.timingSafeEqual(Buffer.from(hashed, "hex"), Buffer.from(user.password_hash, "hex"));
+}
+
+function tokenHash(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function parseCookies(req) {
+  return Object.fromEntries(String(req.headers.cookie || "").split(";").map(item => {
+    const [key, ...parts] = item.trim().split("=");
+    return [key, decodeURIComponent(parts.join("=") || "")];
+  }).filter(([key]) => key));
+}
+
+function setSessionCookie(req, res, token) {
+  const maxAge = Math.floor(SESSION_TTL_MS / 1000);
+  const secure = IS_PROD ? "; Secure" : "";
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${encodeURIComponent(token)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure}`);
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${IS_PROD ? "; Secure" : ""}`);
+}
+
+function publicUser(user) {
+  if (!user) return null;
+  return { id: user.id, email: user.email, display_name: user.display_name, created_at: user.created_at || null };
+}
+
+function validateEmail(email) {
+  const normalized = String(email || "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new Error("Invalid email");
+  return normalized.slice(0, 160);
+}
+
+function validatePassword(password) {
+  const value = String(password || "");
+  if (value.length < PASSWORD_MIN_LENGTH) throw new Error(`Password must be at least ${PASSWORD_MIN_LENGTH} characters`);
+  if (value.length > 128) throw new Error("Password is too long");
+  return value;
+}
+
+function cleanText(value, max = 500) {
+  return String(value || "").trim().slice(0, max);
+}
+
+async function findUserByEmail(email) {
+  await ensureDb();
+  const result = await queryDb("select * from users where email = $1", [email]);
+  if (result) return result.rows[0] || null;
+  const db = readLocalDb();
+  return db.users.find(user => user.email === email) || null;
+}
+
+async function findUserById(id) {
+  await ensureDb();
+  const result = await queryDb("select * from users where id = $1", [id]);
+  if (result) return result.rows[0] || null;
+  const db = readLocalDb();
+  return db.users.find(user => user.id === id) || null;
+}
+
+async function createUser({ email, password, displayName }) {
+  await ensureDb();
+  const existing = await findUserByEmail(email);
+  if (existing) throw new Error("Email already registered");
+  const id = uid();
+  const createdAt = new Date().toISOString();
+  const passwordData = hashPassword(password);
+  const user = { id, email, display_name: displayName, password_hash: passwordData.hash, salt: passwordData.salt, created_at: createdAt };
+  const profile = { user_id: id, lover_name: "澄", user_name: displayName || "你", tone: "gentle", intimacy: 42, updated_at: createdAt };
+  const result = await queryDb(
+    "insert into users (id, email, display_name, password_hash, salt) values ($1, $2, $3, $4, $5) returning *",
+    [id, email, displayName, passwordData.hash, passwordData.salt]
+  );
+  if (result) {
+    await queryDb(
+      "insert into profiles (user_id, lover_name, user_name, tone, intimacy) values ($1, $2, $3, $4, $5)",
+      [id, profile.lover_name, profile.user_name, profile.tone, profile.intimacy]
+    );
+    return result.rows[0];
+  }
+  const db = readLocalDb();
+  db.users.push(user);
+  db.profiles.push(profile);
+  writeLocalDb(db);
+  return user;
+}
+
+async function createSession(userId) {
+  await ensureDb();
+  const token = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + SESSION_TTL_MS).toISOString();
+  const hashed = tokenHash(token);
+  const result = await queryDb(
+    "insert into sessions (token_hash, user_id, expires_at) values ($1, $2, $3)",
+    [hashed, userId, expiresAt]
+  );
+  if (!result) {
+    const db = readLocalDb();
+    db.sessions = db.sessions.filter(session => new Date(session.expires_at).getTime() > Date.now());
+    db.sessions.push({ token_hash: hashed, user_id: userId, expires_at: expiresAt, created_at: new Date().toISOString() });
+    writeLocalDb(db);
+  }
+  return token;
+}
+
+async function deleteSession(token) {
+  if (!token) return;
+  await ensureDb();
+  const hashed = tokenHash(token);
+  const result = await queryDb("delete from sessions where token_hash = $1", [hashed]);
+  if (!result) {
+    const db = readLocalDb();
+    db.sessions = db.sessions.filter(session => session.token_hash !== hashed);
+    writeLocalDb(db);
+  }
+}
+
+async function getAuthUser(req) {
+  const token = parseCookies(req)[SESSION_COOKIE];
+  if (!token) return null;
+  await ensureDb();
+  const hashed = tokenHash(token);
+  const result = await queryDb(
+    "select users.* from sessions join users on users.id = sessions.user_id where sessions.token_hash = $1 and sessions.expires_at > now()",
+    [hashed]
+  );
+  if (result) return result.rows[0] || null;
+  const db = readLocalDb();
+  const session = db.sessions.find(item => item.token_hash === hashed && new Date(item.expires_at).getTime() > Date.now());
+  return session ? db.users.find(user => user.id === session.user_id) || null : null;
+}
+
+async function getProfile(userId) {
+  await ensureDb();
+  const result = await queryDb("select * from profiles where user_id = $1", [userId]);
+  if (result) return result.rows[0] || null;
+  const db = readLocalDb();
+  return db.profiles.find(profile => profile.user_id === userId) || null;
+}
+
+async function upsertProfile(userId, profile) {
+  await ensureDb();
+  const loverName = cleanText(profile.lover_name || profile.loverName || "澄", 24) || "澄";
+  const userName = cleanText(profile.user_name || profile.userName || "你", 24) || "你";
+  const tone = ["gentle", "playful", "calm"].includes(profile.tone) ? profile.tone : "gentle";
+  const intimacy = Math.max(0, Math.min(100, Number(profile.intimacy || 42)));
+  const result = await queryDb(`
+    insert into profiles (user_id, lover_name, user_name, tone, intimacy)
+    values ($1, $2, $3, $4, $5)
+    on conflict (user_id) do update set
+      lover_name = excluded.lover_name,
+      user_name = excluded.user_name,
+      tone = excluded.tone,
+      intimacy = excluded.intimacy,
+      updated_at = now()
+    returning *
+  `, [userId, loverName, userName, tone, intimacy]);
+  if (result) return result.rows[0];
+  const db = readLocalDb();
+  const existing = db.profiles.find(item => item.user_id === userId);
+  const next = { user_id: userId, lover_name: loverName, user_name: userName, tone, intimacy, updated_at: new Date().toISOString() };
+  if (existing) Object.assign(existing, next);
+  else db.profiles.push(next);
+  writeLocalDb(db);
+  return next;
+}
+
+async function getMemories(userId, limit = 30) {
+  await ensureDb();
+  const result = await queryDb("select * from memories where user_id = $1 order by created_at desc limit $2", [userId, limit]);
+  if (result) return result.rows;
+  const db = readLocalDb();
+  return db.memories.filter(item => item.user_id === userId).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, limit);
+}
+
+async function addMemory(userId, content) {
+  const text = cleanText(content, 300);
+  if (!text) return null;
+  await ensureDb();
+  const id = uid();
+  const result = await queryDb("insert into memories (id, user_id, content) values ($1, $2, $3) returning *", [id, userId, text]);
+  if (result) return result.rows[0];
+  const db = readLocalDb();
+  const item = { id, user_id: userId, content: text, created_at: new Date().toISOString() };
+  db.memories.push(item);
+  writeLocalDb(db);
+  return item;
+}
+
+async function replaceMemories(userId, items) {
+  await ensureDb();
+  const memories = Array.isArray(items) ? items.map(item => cleanText(item, 300)).filter(Boolean).slice(0, 30) : [];
+  const result = await queryDb("delete from memories where user_id = $1", [userId]);
+  if (result) {
+    for (const item of memories) await addMemory(userId, item);
+    return getMemories(userId);
+  }
+  const db = readLocalDb();
+  db.memories = db.memories.filter(item => item.user_id !== userId);
+  for (const item of memories) db.memories.push({ id: uid(), user_id: userId, content: item, created_at: new Date().toISOString() });
+  writeLocalDb(db);
+  return getMemories(userId);
+}
+
+async function getMessages(userId, limit = 80) {
+  await ensureDb();
+  const result = await queryDb("select * from messages where user_id = $1 order by created_at desc limit $2", [userId, limit]);
+  if (result) return result.rows.reverse();
+  const db = readLocalDb();
+  return db.messages.filter(item => item.user_id === userId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit);
+}
+
+async function addMessage(userId, role, content, meta = {}) {
+  const text = cleanText(content, 2000);
+  if (!text) return null;
+  await ensureDb();
+  const id = uid();
+  const result = await queryDb(
+    "insert into messages (id, user_id, role, content, safety, emotion, provider) values ($1, $2, $3, $4, $5, $6, $7) returning *",
+    [id, userId, role, text, meta.safety || null, meta.emotion || null, meta.provider || null]
+  );
+  if (result) return result.rows[0];
+  const db = readLocalDb();
+  const item = { id, user_id: userId, role, content: text, safety: meta.safety || null, emotion: meta.emotion || null, provider: meta.provider || null, created_at: new Date().toISOString() };
+  db.messages.push(item);
+  writeLocalDb(db);
+  return item;
+}
+
+async function handleAuth(req, res, pathname) {
+  if (req.method === "OPTIONS") return sendJson(req, res, 200, { ok: true });
+  try {
+    if (pathname === "/api/auth/me" && req.method === "GET") {
+      const user = await getAuthUser(req);
+      if (!user) return sendJson(req, res, 200, { user: null });
+      const profile = await getProfile(user.id);
+      const memories = await getMemories(user.id);
+      const messages = await getMessages(user.id);
+      return sendJson(req, res, 200, {
+        user: publicUser(user),
+        profile,
+        memories: memories.map(item => item.content),
+        messages: messages.map(item => ({
+          id: item.id,
+          role: item.role,
+          text: item.content,
+          safety: item.safety,
+          emotion: item.emotion,
+          created_at: item.created_at
+        }))
+      });
+    }
+
+    if ((pathname === "/api/auth/register" || pathname === "/api/auth/login") && req.method === "POST") {
+      const body = JSON.parse(await readBody(req) || "{}");
+      const email = validateEmail(body.email);
+      const password = validatePassword(body.password);
+      let user;
+      if (pathname.endsWith("/register")) {
+        const displayName = cleanText(body.display_name || body.displayName || "你", 40) || "你";
+        user = await createUser({ email, password, displayName });
+      } else {
+        user = await findUserByEmail(email);
+        if (!user || !verifyPassword(password, user)) return sendJson(req, res, 401, { error: "Email or password is incorrect" });
+      }
+      const token = await createSession(user.id);
+      setSessionCookie(req, res, token);
+      return sendJson(req, res, 200, { user: publicUser(user), profile: await getProfile(user.id), memories: (await getMemories(user.id)).map(item => item.content), messages: await getMessages(user.id) });
+    }
+
+    if (pathname === "/api/auth/logout" && req.method === "POST") {
+      await deleteSession(parseCookies(req)[SESSION_COOKIE]);
+      clearSessionCookie(res);
+      return sendJson(req, res, 200, { ok: true });
+    }
+
+    if (pathname === "/api/user/profile" && req.method === "POST") {
+      const user = await getAuthUser(req);
+      if (!user) return sendJson(req, res, 401, { error: "Login required" });
+      const body = JSON.parse(await readBody(req) || "{}");
+      const profile = await upsertProfile(user.id, body.profile || body);
+      if (Array.isArray(body.memories)) await replaceMemories(user.id, body.memories);
+      return sendJson(req, res, 200, { profile, memories: (await getMemories(user.id)).map(item => item.content) });
+    }
+
+    return sendJson(req, res, 404, { error: "Not found" });
+  } catch (error) {
+    return sendJson(req, res, 400, { error: IS_PROD ? "Request failed" : sanitizeError(error.message) });
+  }
 }
 
 function clientIp(req) {
@@ -600,7 +1003,27 @@ async function handleChat(req, res) {
     const payload = JSON.parse(body || "{}");
     const conversation = extractConversation(payload);
     validatePayload(payload, conversation);
+    const user = await getAuthUser(req);
+    if (user) {
+      const loverProfile = conversation.lover_profile || {};
+      await upsertProfile(user.id, {
+        lover_name: loverProfile.name,
+        user_name: loverProfile.user_name,
+        tone: loverProfile.tone,
+        intimacy: conversation.intimacy
+      });
+      if (Array.isArray(conversation.long_term_memory)) await replaceMemories(user.id, conversation.long_term_memory);
+      await addMessage(user.id, "user", conversation.user_input);
+    }
     const routed = await routeProviders(payload, conversation);
+    if (user) {
+      await addMessage(user.id, "lover", routed.result.reply, {
+        safety: routed.result.safety,
+        emotion: routed.result.emotion,
+        provider: routed.provider
+      });
+      for (const memory of routed.result.memory_patch || []) await addMemory(user.id, memory);
+    }
     const response = { ...routed.result };
     if (EXPOSE_DEBUG) response.debug = publicDebug(routed);
     return sendJson(req, res, 200, response);
@@ -659,6 +1082,8 @@ function serveFile(req, res) {
 }
 
 const server = http.createServer((req, res) => {
+  const pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;
+  if (pathname.startsWith("/api/auth/") || pathname.startsWith("/api/user/")) return handleAuth(req, res, pathname);
   if (req.url.startsWith("/api/cloud-lover/chat")) return handleChat(req, res);
   if (req.url.startsWith("/api/provider/status")) return handleProviderStatus(req, res);
   if (req.url.startsWith("/healthz")) return sendJson(req, res, 200, { ok: true });

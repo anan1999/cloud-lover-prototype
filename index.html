@@ -248,6 +248,31 @@
     .toggle button.active { color: #101416; background: var(--teal); }
     .dev-only { display: none; }
     body.dev-mode .dev-only { display: block; }
+    .auth-card {
+      margin-bottom: 18px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.05);
+      display: grid;
+      gap: 10px;
+    }
+    .auth-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .auth-primary {
+      min-height: 38px;
+      border-radius: 8px;
+      color: #101416;
+      background: var(--teal);
+      font-weight: 700;
+    }
+    .auth-secondary {
+      min-height: 38px;
+      border-radius: 8px;
+      color: var(--text);
+      background: rgba(255,255,255,.08);
+      border: 1px solid var(--line);
+    }
+    .auth-status { min-height: 18px; color: var(--muted); font-size: 13px; line-height: 1.4; }
 
     @media (max-width: 1120px) {
       .app { grid-template-columns: 280px 1fr; }
@@ -319,6 +344,32 @@
 
     <aside class="panel side" aria-label="設定">
       <div class="side-body">
+        <section class="auth-card" aria-label="帳號">
+          <div class="row" style="justify-content: space-between;">
+            <strong id="authTitle">訪客模式</strong>
+            <button class="auth-secondary hidden" id="logoutBtn" type="button">登出</button>
+          </div>
+          <div id="authForm">
+            <div class="field">
+              <label for="emailInput">Email</label>
+              <input id="emailInput" type="email" autocomplete="email" placeholder="you@example.com">
+            </div>
+            <div class="field">
+              <label for="passwordInput">密碼</label>
+              <input id="passwordInput" type="password" autocomplete="current-password" placeholder="至少 8 個字">
+            </div>
+            <div class="field">
+              <label for="displayNameInput">暱稱</label>
+              <input id="displayNameInput" maxlength="24" placeholder="你的名字">
+            </div>
+            <div class="auth-actions">
+              <button class="auth-primary" id="loginBtn" type="button">登入</button>
+              <button class="auth-secondary" id="registerBtn" type="button">註冊</button>
+            </div>
+          </div>
+          <div class="auth-status" id="authStatus">登入後會保存設定、記憶和聊天紀錄。</div>
+        </section>
+
         <div class="mode-row">
           <div class="toggle" aria-label="模式切換">
             <button id="userModeBtn" class="active" type="button">使用者</button>
@@ -408,6 +459,7 @@
         "希望陪伴有邊界，不取代現實關係。"
       ],
       messages: []
+      ,currentUser: null
     };
 
     const toneConfig = {
@@ -426,7 +478,16 @@
       routeStatus: document.querySelector("#routeStatus"),
       modeBadge: document.querySelector("#modeBadge"),
       userModeBtn: document.querySelector("#userModeBtn"),
-      devModeBtn: document.querySelector("#devModeBtn")
+      devModeBtn: document.querySelector("#devModeBtn"),
+      authTitle: document.querySelector("#authTitle"),
+      authForm: document.querySelector("#authForm"),
+      authStatus: document.querySelector("#authStatus"),
+      emailInput: document.querySelector("#emailInput"),
+      passwordInput: document.querySelector("#passwordInput"),
+      displayNameInput: document.querySelector("#displayNameInput"),
+      loginBtn: document.querySelector("#loginBtn"),
+      registerBtn: document.querySelector("#registerBtn"),
+      logoutBtn: document.querySelector("#logoutBtn")
     };
 
     function buildSystemPrompt() {
@@ -490,11 +551,94 @@
       }
       const response = await fetch(state.endpoint, {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
       if (!response.ok) throw new Error(`API 回應失敗：${response.status}`);
       return response.json();
+    }
+
+    function authUrl(path) {
+      return window.location.protocol === "file:" ? `http://127.0.0.1:8787${path}` : path;
+    }
+
+    async function authRequest(path, body) {
+      const response = await fetch(authUrl(path), {
+        method: body ? "POST" : "GET",
+        credentials: "include",
+        headers: body ? { "Content-Type": "application/json" } : {},
+        body: body ? JSON.stringify(body) : undefined
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    function applyAccountData(data) {
+      state.currentUser = data.user || null;
+      if (!state.currentUser) {
+        dom.authTitle.textContent = "訪客模式";
+        dom.authForm.classList.remove("hidden");
+        dom.logoutBtn.classList.add("hidden");
+        dom.authStatus.textContent = "登入後會保存設定、記憶和聊天紀錄。";
+        return;
+      }
+      const profile = data.profile || {};
+      state.loverName = profile.lover_name || state.loverName;
+      state.userName = profile.user_name || state.userName;
+      state.tone = profile.tone || state.tone;
+      state.intimacy = Number.isFinite(Number(profile.intimacy)) ? Number(profile.intimacy) : state.intimacy;
+      if (Array.isArray(data.memories) && data.memories.length) state.memories = data.memories;
+      if (Array.isArray(data.messages) && data.messages.length) {
+        state.messages = data.messages.map(item => ({
+          role: item.role === "assistant" ? "lover" : item.role,
+          text: item.text || item.content || ""
+        })).filter(item => item.text);
+      }
+      if (!state.messages.length) state.messages = [{ role: "lover", text: "我在。今天想從哪裡開始說呢？" }];
+      document.querySelector("#nameInput").value = state.loverName;
+      document.querySelector("#userName").value = state.userName;
+      document.querySelector("#toneSelect").value = state.tone;
+      dom.authTitle.textContent = `已登入：${state.currentUser.display_name || state.currentUser.email}`;
+      dom.authForm.classList.add("hidden");
+      dom.logoutBtn.classList.remove("hidden");
+      dom.authStatus.textContent = `已載入 ${state.messages.length} 則聊天紀錄。之後的問答會自動保存。`;
+      renderAll(true);
+    }
+
+    async function loadSession() {
+      try {
+        const data = await authRequest("/api/auth/me");
+        applyAccountData(data);
+      } catch (error) {
+        dom.authStatus.textContent = `讀取登入狀態失敗：${error.message}`;
+      }
+    }
+
+    async function loginOrRegister(mode) {
+      const email = dom.emailInput.value.trim();
+      const password = dom.passwordInput.value;
+      const displayName = dom.displayNameInput.value.trim() || dom.userName?.value || "你";
+      dom.authStatus.textContent = mode === "register" ? "正在建立帳號..." : "正在登入...";
+      try {
+        const data = await authRequest(`/api/auth/${mode}`, { email, password, display_name: displayName });
+        applyAccountData(data);
+      } catch (error) {
+        dom.authStatus.textContent = error.message.includes("Password") ? "密碼至少需要 8 個字。" : `帳號處理失敗：${error.message}`;
+      }
+    }
+
+    async function logout() {
+      try {
+        await authRequest("/api/auth/logout", {});
+      } finally {
+        state.currentUser = null;
+        dom.authTitle.textContent = "訪客模式";
+        dom.authForm.classList.remove("hidden");
+        dom.logoutBtn.classList.add("hidden");
+        dom.authStatus.textContent = "已登出。此裝置上的畫面會保留，但新訊息不會寫入帳號。";
+      }
     }
 
     function mockLLM(userText) {
@@ -744,10 +888,14 @@
     document.querySelector("#statusBtn").addEventListener("click", refreshProviderStatus);
     dom.userModeBtn.addEventListener("click", () => setDevMode(false));
     dom.devModeBtn.addEventListener("click", () => setDevMode(true));
+    dom.loginBtn.addEventListener("click", () => loginOrRegister("login"));
+    dom.registerBtn.addEventListener("click", () => loginOrRegister("register"));
+    dom.logoutBtn.addEventListener("click", logout);
 
     state.messages.push({ role: "lover", text: "我在。今天想從哪裡開始說呢？" });
     dom.payloadPreview.textContent = JSON.stringify(buildLLMPayload("示範：我今天有點累，你可以陪我一下嗎？"), null, 2);
     renderAll();
+    loadSession();
   </script>
 </body>
 </html>

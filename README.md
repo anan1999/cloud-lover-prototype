@@ -77,6 +77,7 @@ PROVIDER_ORDER=gemini,openrouter,nvidia,groq,mock
 ALLOWED_ORIGINS=https://your-domain.example
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
+DATABASE_URL=postgresql://...
 
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-2.5-flash
@@ -99,6 +100,7 @@ BODY_LIMIT_BYTES=65536
 
 - Rotate any API key that was pasted into chat, screenshots, browser history, or logs.
 - Never commit `.env.local`.
+- Use a long-lived external Postgres database such as Neon for user accounts and chat history.
 - Set `NODE_ENV=production` on the host.
 - Set `ALLOWED_ORIGINS` to your real domain.
 - Keep `EXPOSE_DEBUG=0` and `ENABLE_PROVIDER_STATUS=0` in production.

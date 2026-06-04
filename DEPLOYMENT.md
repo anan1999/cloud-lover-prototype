@@ -43,6 +43,7 @@ PROVIDER_ORDER=gemini,openrouter,nvidia,groq,mock
 ALLOWED_ORIGINS=https://cloud-lover-prototype.onrender.com
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
+DATABASE_URL=postgresql://...
 
 GEMINI_API_KEY=your_new_gemini_key
 GEMINI_MODEL=gemini-2.5-flash
@@ -62,6 +63,8 @@ BODY_LIMIT_BYTES=65536
 ```
 
 Important: rotate the Gemini, OpenRouter, and NVIDIA keys that were pasted into chat before using production.
+
+For accounts and chat history, use a long-lived external Postgres database for `DATABASE_URL`. Recommended free-first path is Neon Free Postgres. Supabase Free Postgres is also usable, but idle free projects can pause. Avoid Render Free Postgres for important production data because it is short-lived/trial-oriented.
 
 ## Step 3: Verify Launch
 
@@ -108,6 +111,7 @@ ALLOWED_ORIGINS=https://app.yourdomain.com
 - [ ] `ALLOWED_ORIGINS` set to the real domain
 - [ ] `EXPOSE_DEBUG=0`
 - [ ] `ENABLE_PROVIDER_STATUS=0`
+- [ ] `DATABASE_URL` points to Neon or another long-lived Postgres database
 - [ ] `PROVIDER_ORDER` does not include `codex`
 - [ ] Provider dashboards have budget/spend limits
 - [ ] App tested with normal and safety-risk messages
