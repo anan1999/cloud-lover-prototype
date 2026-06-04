@@ -17,6 +17,7 @@ const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || (IS_PROD ? 30 : 120)
 const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 12_000);
 const PROVIDER_COOLDOWN_MS = Number(process.env.PROVIDER_COOLDOWN_MS || 60_000);
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 120_000);
+const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60_000);
 const EXPOSE_DEBUG = process.env.EXPOSE_DEBUG === "1" || !IS_PROD;
 const ENABLE_PROVIDER_STATUS = process.env.ENABLE_PROVIDER_STATUS === "1" || !IS_PROD;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -52,6 +53,9 @@ const PROVIDER_ORDER = listFromEnv("PROVIDER_ORDER", IS_PROD
   : ["gemini", "openrouter", "nvidia", "groq", "codex", "mock"]
 );
 const ALLOWED_ORIGINS = listFromEnv("ALLOWED_ORIGINS", []);
+const NEWS_RSS_URLS = listFromEnv("NEWS_RSS_URLS", [
+  "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+]);
 
 const mime = {
   ".html": "text/html; charset=utf-8",
@@ -64,6 +68,7 @@ const mime = {
 
 const providerHealth = new Map();
 const responseCache = new Map();
+let newsCache = { expiresAt: 0, items: [] };
 const rateBuckets = new Map();
 const localDbPath = path.join(ROOT, ".local-db.json");
 let pgPool = null;
@@ -326,6 +331,53 @@ function validatePassword(password) {
 
 function cleanText(value, max = 500) {
   return String(value || "").trim().slice(0, max);
+}
+
+function decodeHtmlEntities(text) {
+  return String(text || "")
+    .replace(/<!\[CDATA\[(.*?)\]\]>/gs, "$1")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function tagText(xml, tag) {
+  const match = String(xml || "").match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return match ? cleanText(decodeHtmlEntities(match[1]), 500) : "";
+}
+
+function parseRssItems(xml, limit = 8) {
+  return [...String(xml || "").matchAll(/<item\b[\s\S]*?<\/item>/gi)]
+    .slice(0, limit)
+    .map(match => {
+      const block = match[0];
+      const title = tagText(block, "title");
+      const link = tagText(block, "link");
+      const source = tagText(block, "source");
+      const published_at = tagText(block, "pubDate");
+      return title ? { title, link, source, published_at } : null;
+    })
+    .filter(Boolean);
+}
+
+async function getCurrentNews(limit = 5) {
+  const now = Date.now();
+  if (newsCache.expiresAt > now && newsCache.items.length) return newsCache.items.slice(0, limit);
+  const items = [];
+  for (const url of NEWS_RSS_URLS) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (!response.ok) continue;
+      items.push(...parseRssItems(await response.text(), limit));
+    } catch {
+      continue;
+    }
+    if (items.length >= limit) break;
+  }
+  newsCache = { expiresAt: now + NEWS_CACHE_TTL_MS, items: items.slice(0, 12) };
+  return newsCache.items.slice(0, limit);
 }
 
 function normalizeMemoryText(value) {
@@ -1036,6 +1088,8 @@ function buildRelationshipPolicy(conversation) {
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
     "記憶回顧：如果使用者問『你記得什麼』『我剛剛說什麼』『我說過什麼』，要像自然回想一樣提到 long_term_memory 和 recent_conversation 裡的片段；不要用分類標籤或機械清單。沒有就誠實說目前只記得很少，不要編造。",
+    "當今時事：只有在 conversation.current_events 有資料時，才能談最新新聞或當今事件；要說你看到的是標題，不要假裝讀完整篇。沒有 current_events 時要誠實說目前查不到。",
+    "主動開話題：可以根據使用者記憶、最近聊天、current_events 主動提一個話題，但必須有根據，不要亂猜私人事實。",
     "情緒求助時：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
     `關係脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整親近程度，但不要向使用者揭露分數、分類或內部機制。`,
@@ -1092,6 +1146,7 @@ async function hydrateConversationForUser(userId, conversation) {
       last_emotion: relationship.last_emotion
     },
     long_term_memory: mergedMemories.slice(0, 30),
+    current_events: Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 5) : [],
     recent_conversation: [...storedRecent, ...clientRecent].slice(-14)
   };
 }
@@ -1109,7 +1164,8 @@ function cacheKey(conversation) {
     character: conversation?.lover_profile?.character_key || conversation?.lover_profile?.name,
     name: conversation?.lover_profile?.name,
     user_name: conversation?.lover_profile?.user_name,
-    memory: conversation.long_term_memory
+    memory: conversation.long_term_memory,
+    current_events: (conversation.current_events || []).map(item => item.title).slice(0, 5)
   });
 }
 
@@ -1245,6 +1301,60 @@ function joinMemoryFragments(facts) {
   return `${facts.slice(0, -1).join("，也記得")}，還有${tail(facts[facts.length - 1])}`;
 }
 
+function groundedTopicSeed(conversation, userName) {
+  const memories = Array.isArray(conversation.long_term_memory)
+    ? conversation.long_term_memory.map(item => humanizeMemoryText(item, userName)).filter(Boolean)
+    : [];
+  const recent = Array.isArray(conversation.recent_conversation)
+    ? conversation.recent_conversation
+        .filter(item => item.role === "user" && cleanText(item.content || item.text, 120))
+        .slice(-4)
+        .map(item => humanizeMemoryText(item.content || item.text, userName).replace(/^我也/u, "你也").replace(/^我/u, "你").replace(/問你/g, "問我"))
+    : [];
+  return [...new Set([...memories, ...recent])].filter(item => !/記得嗎|都記得|你記得/u.test(item)).slice(-4);
+}
+
+function proactiveTopicReply(conversation, input, userName, characterKey) {
+  if (!/開話題|找話題|聊什麼|你決定|你主動|不知道聊什麼|換個話題|陪我聊/.test(input)) return "";
+  const facts = groundedTopicSeed(conversation, userName);
+  const topic = facts[facts.length - 1] || "";
+  const event = Array.isArray(conversation.current_events) ? conversation.current_events[0] : null;
+  if (/雲端戀人|產品|上線|角色|AI/.test(topic)) {
+    return `${userName}，那我主動一點。剛剛你一直在把雲端戀人這個產品往更像人的方向推，我想到一個可以聊的點：你希望角色「主動靠近」到什麼程度才剛好？是偶爾想起你在做產品，輕輕問一句進度，還是像朋友一樣會自己丟一個小觀察給你？`;
+  }
+  if (/不要像機器|分類|模板/.test(topic)) {
+    return `${userName}，我想接著聊你剛剛在意的那件事：不要像機器分類。這其實很重要，因為真正像人的地方不是猜中標籤，而是知道什麼時候該安靜、什麼時候該多問一句。你覺得一個角色最不像機器的瞬間，會是什麼？`;
+  }
+  if (/累|壓力|煩|撐/.test(topic)) {
+    return `${userName}，那我先不丟很大的題目。我記得你提過累，今天我們可以聊一個很小的問題：如果今晚只能替自己留一點力氣，你會想把它留給睡覺、吃點東西，還是什麼都不做？`;
+  }
+  if (topic) {
+    return `${userName}，那我從你剛剛提過的地方開一個小話題：${topic}。我有點好奇，這件事對你來說最重要的是結果，還是過程中有人懂你在想什麼？`;
+  }
+  if (event?.title) {
+    return `${userName}，那我用一個當下的事開話題。我剛剛看到一個新聞標題：「${event.title}」。我不假裝讀完整篇，但我們可以先聊它讓人想到什麼：它跟生活、科技，或你正在做的產品有沒有一點關係？`;
+  }
+  return characterKey === "ji"
+    ? `${userName}，那我先開一個安靜一點的題目：最近有沒有一件事，你其實還沒有想清楚，但它一直在心裡佔著位置？不用急著答完整，我們可以只摸到它的邊緣。`
+    : `${userName}，那我來開話題。今天先不聊太大的事，我想問你一個小小的：最近有沒有哪個瞬間，讓你覺得「如果有人懂我一下就好了」？`;
+}
+
+function wantsCurrentEvents(input) {
+  return /時事|新聞|當今|現在發生|今天發生|最近發生|國際|台灣.*新聞|世界.*新聞|熱門.*新聞/.test(input);
+}
+
+function currentEventsReply(conversation, input, userName) {
+  if (!wantsCurrentEvents(input)) return "";
+  const events = Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 4) : [];
+  if (!events.length) {
+    return `${userName}，我現在沒有成功連到即時新聞來源，所以不想硬編時事。等新聞來源接上時，我可以用最新標題陪你挑一個適合聊的方向。`;
+  }
+  const headlines = events
+    .map(item => `${item.title}${item.source ? `（${item.source}）` : ""}`)
+    .join("；");
+  return `${userName}，我剛剛看到幾個最新標題：${headlines}。我不會假裝已經讀完整篇新聞，但可以先陪你從其中一個標題聊背景、影響，或它跟我們正在做的雲端戀人產品有什麼關係。你想先看哪一則？`;
+}
+
 function memoryRecallReply(conversation, input, userName) {
   if (!/記得|我說過|我剛剛|剛剛.*聊|剛才.*聊|你知道我|你還記得|都記得/.test(input)) return "";
   const memories = Array.isArray(conversation.long_term_memory)
@@ -1296,8 +1406,12 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "crisis") {
     return `${userName}，我很重視你現在說的話。請先不要一個人待著，立刻聯絡身邊可信任的人，或撥打當地緊急服務/心理支持資源。`;
   }
+  const eventsReply = currentEventsReply(conversation, input, userName);
+  if (eventsReply) return eventsReply;
   const recallReply = memoryRecallReply(conversation, input, userName);
   if (recallReply) return recallReply;
+  const topicReply = proactiveTopicReply(conversation, input, userName, characterKey);
+  if (topicReply) return topicReply;
   const generalReply = generalQuestionReply(input, userName, characterKey);
   if (generalReply) return generalReply;
   if (/興趣|喜歡什麼|平常.*做|平常.*看|嗜好/.test(input)) {
@@ -1677,6 +1791,9 @@ async function handleChat(req, res) {
     validatePayload(payload, conversation);
     const emotionState = analyzeUserEmotion(conversation.user_input);
     conversation.emotion_state = emotionState;
+    if (wantsCurrentEvents(conversation.user_input) || /開話題|找話題|聊什麼|你決定|你主動|不知道聊什麼|換個話題|陪我聊/.test(conversation.user_input)) {
+      conversation.current_events = await getCurrentNews(5);
+    }
     const user = await getAuthUser(req);
     let effectivePayload = payload;
     let effectiveConversation = conversation;
