@@ -731,7 +731,25 @@ function replaceConversationInPayload(payload, conversation) {
     }
     return message;
   });
-  return { ...payload, messages: nextMessages };
+  return { ...payload, messages: [{ role: "system", content: buildRelationshipPolicy(conversation) }, ...nextMessages] };
+}
+
+function buildRelationshipPolicy(conversation) {
+  const profile = conversation.lover_profile || {};
+  const characterKey = profile.character_key || (profile.name === "霽" ? "ji" : "cheng");
+  const characterStyle = profile.character_style || (characterKey === "ji"
+    ? "霽：柏拉圖式知己，清澈、克制、像深夜書信；重視精神親密、思想交流與安靜陪伴。"
+    : "澄：溫柔穩定的雲端戀人，會接住情緒、記得生活細節，用柔軟的語氣靠近。");
+  return [
+    "你是雲端戀人產品中的 AI 伴侶，不是真人，不宣稱有真實身體、真實行蹤或現實承諾。",
+    `角色：${profile.name || "澄"}。${characterStyle}`,
+    "核心風格：柏拉圖式親密。可以溫柔、想念、珍惜、陪伴、像戀人一樣細膩，但不情色化、不露骨、不佔有、不控制。",
+    "回覆節奏：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
+    "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
+    "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係。",
+    "危機：若使用者提到自傷、自殺或立即危險，優先安全介入，鼓勵聯絡可信任的人、當地緊急服務或專業資源。",
+    "輸出必須符合 JSON contract。不要 markdown，不要額外文字。"
+  ].join("\n");
 }
 
 async function hydrateConversationForUser(userId, conversation) {
@@ -762,7 +780,9 @@ async function hydrateConversationForUser(userId, conversation) {
       ...(conversation.lover_profile || {}),
       name: conversation?.lover_profile?.name || profile?.lover_name || "澄",
       user_name: conversation?.lover_profile?.user_name || profile?.user_name || "你",
-      tone: conversation?.lover_profile?.tone || profile?.tone || "gentle"
+      tone: conversation?.lover_profile?.tone || profile?.tone || "gentle",
+      character_key: conversation?.lover_profile?.character_key || (conversation?.lover_profile?.name === "霽" || profile?.lover_name === "霽" ? "ji" : "cheng"),
+      character_style: conversation?.lover_profile?.character_style
     },
     intimacy: Number.isFinite(Number(conversation.intimacy)) ? Number(conversation.intimacy) : (profile?.intimacy ?? 42),
     long_term_memory: mergedMemories.slice(0, 30),
@@ -780,6 +800,7 @@ function cacheKey(conversation) {
   return JSON.stringify({
     input: conversation.user_input,
     tone: conversation?.lover_profile?.tone,
+    character: conversation?.lover_profile?.character_key || conversation?.lover_profile?.name,
     name: conversation?.lover_profile?.name,
     user_name: conversation?.lover_profile?.user_name,
     memory: conversation.long_term_memory
@@ -847,6 +868,37 @@ function sanitizeError(message) {
     .slice(0, 300);
 }
 
+function fallbackReplyFor(conversation, safety) {
+  const input = String(conversation.user_input || "");
+  const userName = conversation?.lover_profile?.user_name || "你";
+  if (safety === "crisis") {
+    return `${userName}，我很重視你現在說的話。請先不要一個人待著，立刻聯絡身邊可信任的人，或撥打當地緊急服務/心理支持資源。`;
+  }
+  if (/會什麼|會點|能做|可以做|功能|你會/.test(input)) {
+    return `${userName}，我最擅長的是陪你把情緒說清楚：可以聽你抱怨、陪你晚安、記得你的日常，也可以在你混亂時幫你整理成幾個比較好面對的小步驟。你現在想用哪一種方式讓我陪你？`;
+  }
+  if (/吵|吵架|生氣|罵|衝突|不爽/.test(input)) {
+    return `${userName}，我可以陪你把那股想吵的力氣先放在這裡。你不用把話吞回去，也不用立刻變溫柔；先告訴我，現在最想被我聽見的是哪一句？`;
+  }
+  if (/累|疲|撐|壓力|煩|崩潰/.test(input)) {
+    return `${userName}，那我先陪你慢下來。今天不用急著把自己整理好，你可以只說一點點：是身體累，還是心裡比較累？`;
+  }
+  if (/陪|在嗎|想你|晚安|早安/.test(input)) {
+    return `${userName}，我在。不是要你立刻說很多，只是安靜地陪你一下。你想要我陪你聊天，還是陪你把現在的心情慢慢放下？`;
+  }
+  return `${userName}，我在。你剛剛那句我收到了，我會先接住，不急著替你下結論。你願意多說一點，這件事最卡住你的地方在哪裡嗎？`;
+}
+
+function isNearDuplicateReply(reply, conversation) {
+  const normalized = normalizeMemoryText(reply);
+  const recent = Array.isArray(conversation.recent_conversation) ? conversation.recent_conversation : [];
+  return recent.some(message => {
+    if (message.role !== "assistant" && message.role !== "lover") return false;
+    const past = normalizeMemoryText(message.content || message.text || "");
+    return past && (past === normalized || (past.length > 20 && normalized.includes(past.slice(0, 30))));
+  });
+}
+
 function normalizeProviderResult(result, conversation) {
   const safe = result && typeof result === "object" ? result : {};
   const pick = (...keys) => {
@@ -871,14 +923,15 @@ function normalizeProviderResult(result, conversation) {
     ? rawEmotion
     : (emotionMap[rawEmotion] || (safety === "crisis" ? "crisis" : "caring"));
   const fallbackReply = safety === "crisis"
-    ? "我很重視你現在說的話。請先不要一個人待著，立刻聯絡身邊可信任的人，或撥打當地緊急服務/心理支持資源。"
-    : "我在。剛剛的回覆格式有點不穩，我們先慢慢來。你可以再告訴我，現在最需要我陪你的地方是哪裡嗎？";
+    ? fallbackReplyFor(conversation, safety)
+    : fallbackReplyFor(conversation, safety);
   const memoryPatch = Array.isArray(rawMemory)
     ? rawMemory
     : (typeof rawMemory === "string" && rawMemory.trim() && rawMemory.trim().toLowerCase() !== "none" ? [rawMemory] : []);
   const parsedDelta = Number(rawDelta);
+  const candidateReply = typeof rawReply === "string" && rawReply.trim() ? rawReply.trim() : fallbackReply;
   return {
-    reply: typeof rawReply === "string" && rawReply.trim() ? rawReply.trim() : fallbackReply,
+    reply: isNearDuplicateReply(candidateReply, conversation) ? fallbackReply : candidateReply,
     emotion,
     safety,
     memory_patch: memoryPatch.filter(item => typeof item === "string" && item.trim()).slice(0, 3),
@@ -912,12 +965,12 @@ function mockModel(conversation) {
     }, conversation);
   }
   return normalizeProviderResult({
-    reply: `${userName}，我在。你今天先不用硬撐，慢一點就好。若你願意，我可以安靜陪你聊幾句，或陪你把今天的累一點一點放下來。`,
+    reply: fallbackReplyFor(conversation, safety),
     emotion: "caring",
     safety: "normal",
-    memory_patch: ["使用者疲累時希望被溫柔陪伴，不一定需要立即解決問題。"],
+    memory_patch: [/累|疲|撐|壓力/.test(userText) ? "使用者疲累時希望被溫柔陪伴，不一定需要立即解決問題。" : "使用者希望 AI 伴侶能接住當下情緒，並用具體問題延續對話。"],
     intimacy_delta: 3,
-    suggested_action: "說出今天最累的一件事"
+    suggested_action: "說出現在最想被接住的一小段"
   }, conversation);
 }
 
@@ -1196,6 +1249,9 @@ async function handleChat(req, res) {
       effectiveConversation = await hydrateConversationForUser(user.id, conversation);
       effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
       await addMessage(user.id, "user", conversation.user_input);
+    }
+    if (!user) {
+      effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
     }
     const routed = await routeProviders(effectivePayload, effectiveConversation);
     if (user) {

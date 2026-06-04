@@ -8,6 +8,7 @@
 4. Hydrate the LLM prompt with:
    - current user input
    - lover profile
+   - selected character archetype
    - database long-term memory
    - recent database conversation
    - client recent conversation as a short fallback
@@ -19,6 +20,22 @@ Gemini -> OpenRouter -> NVIDIA -> Groq -> Mock
 
 6. Normalize model output into the product contract.
 7. Store user message, AI reply, safety label, emotion, provider, and memory patches.
+
+## Character Archetypes
+
+The product now supports multiple platonic intimacy archetypes:
+
+- `澄`: gentle cloud lover. Warm, steady, emotionally receptive, good for soft daily companionship.
+- `霽`: platonic confidant. Clear, restrained, letter-like, good for spiritual intimacy and reflective conversations.
+
+All characters must follow the same boundary rule: intimate but not explicit, attached but not possessive, emotionally present but not a replacement for real-world support.
+
+## Platonic Lover Reply Rhythm
+
+1. Name or mirror the user's feeling.
+2. Respond with one remembered detail or one concrete emotional observation.
+3. Offer gentle companionship or a small next question.
+4. Keep the reply concise and embodied in tone, but never claim physical presence.
 
 ## Why Server-Side Memory Wins
 
