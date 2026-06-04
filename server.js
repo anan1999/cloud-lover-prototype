@@ -577,17 +577,13 @@ async function routeProviders(payload, conversation) {
 }
 
 function publicDebug(routed) {
-  const base = {
+  return {
     provider: routed.provider,
     model: routed.model,
     latency_ms: routed.latency_ms,
     cache_hit: routed.cache_hit,
     provider_order: PROVIDER_ORDER,
-    safety_gate: routed.result.safety
-  };
-  if (!EXPOSE_DEBUG) return base;
-  return {
-    ...base,
+    safety_gate: routed.result.safety,
     attempts: routed.attempts,
     provider_health: providerHealthSnapshot()
   };
@@ -605,7 +601,9 @@ async function handleChat(req, res) {
     const conversation = extractConversation(payload);
     validatePayload(payload, conversation);
     const routed = await routeProviders(payload, conversation);
-    return sendJson(req, res, 200, { ...routed.result, debug: publicDebug(routed) });
+    const response = { ...routed.result };
+    if (EXPOSE_DEBUG) response.debug = publicDebug(routed);
+    return sendJson(req, res, 200, response);
   } catch (error) {
     return sendJson(req, res, 400, { error: IS_PROD ? "Bad request" : sanitizeError(error.message) });
   }
