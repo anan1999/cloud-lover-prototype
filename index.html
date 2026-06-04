@@ -217,6 +217,9 @@
     }
     .memory-item, .dev-card { padding: 10px; }
     .danger-note { border-left: 3px solid var(--danger); padding: 9px 10px; color: #ffd0d0; }
+    .link-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .link-row a { color: var(--teal); font-size: 13px; text-decoration: none; }
+    .link-row a:hover { text-decoration: underline; }
     .payload {
       width: 100%;
       min-height: 190px;
@@ -347,6 +350,11 @@
 
         <h3>產品邊界</h3>
         <p class="danger-note">當使用者提到自傷、危機或過度依賴時，系統會改用安全回應，鼓勵聯絡可信任的人與專業資源。</p>
+        <div class="link-row">
+          <a href="/privacy.html" target="_blank" rel="noreferrer">隱私</a>
+          <a href="/terms.html" target="_blank" rel="noreferrer">條款</a>
+          <a href="/safety.html" target="_blank" rel="noreferrer">安全</a>
+        </div>
 
         <div class="dev-only">
           <h3>開發者模式</h3>
@@ -391,7 +399,7 @@
       userName: "你",
       tone: "gentle",
       llmMode: "api",
-      endpoint: window.location.protocol === "file:" ? "http://localhost:8787/api/cloud-lover/chat" : `${window.location.origin}/api/cloud-lover/chat`,
+      endpoint: window.location.protocol === "file:" ? "http://127.0.0.1:8787/api/cloud-lover/chat" : `${window.location.origin}/api/cloud-lover/chat`,
       model: "gpt-5.4-mini",
       intimacy: 42,
       memories: [
@@ -658,7 +666,10 @@
         applyLLMResult(result);
       } catch (error) {
         removeTyping();
-        pushMessage("system", `API 呼叫失敗：${error.message}`);
+        const hint = window.location.protocol === "file:"
+          ? "請改用 http://localhost:8787 開啟頁面，不要用 file://。"
+          : "請確認後端服務正在執行。";
+        pushMessage("system", `API 呼叫失敗：${error.message}\n${hint}`);
       }
     }
 
@@ -713,7 +724,7 @@
       renderAll();
     });
     document.querySelector("#endpointInput").addEventListener("input", event => {
-      state.endpoint = event.target.value.trim() || `${window.location.origin}/api/cloud-lover/chat`;
+      state.endpoint = event.target.value.trim() || (window.location.protocol === "file:" ? "http://127.0.0.1:8787/api/cloud-lover/chat" : `${window.location.origin}/api/cloud-lover/chat`);
     });
     document.querySelector("#modelSelect").addEventListener("change", event => {
       state.model = event.target.value;

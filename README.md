@@ -86,6 +86,7 @@ BODY_LIMIT_BYTES=65536
 - Keep `EXPOSE_DEBUG=0` and `ENABLE_PROVIDER_STATUS=0` in production.
 - Disable Codex provider in production.
 - Set spend caps and rate limits in provider dashboards.
+- Review `privacy.html`, `terms.html`, and `safety.html` before inviting users.
 
 ## Git
 

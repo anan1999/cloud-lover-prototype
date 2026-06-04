@@ -103,6 +103,7 @@ function getOrigin(req) {
 
 function isAllowedOrigin(origin) {
   if (!origin) return true;
+  if (!IS_PROD && origin === "null") return true;
   if (!IS_PROD && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return true;
   return ALLOWED_ORIGINS.includes(origin);
 }

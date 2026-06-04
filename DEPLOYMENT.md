@@ -112,3 +112,4 @@ ALLOWED_ORIGINS=https://app.yourdomain.com
 - [ ] Provider dashboards have budget/spend limits
 - [ ] App tested with normal and safety-risk messages
 - [ ] Custom domain DNS verified
+- [ ] Privacy, terms, and safety pages reviewed for your jurisdiction
