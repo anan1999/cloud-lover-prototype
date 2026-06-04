@@ -1,61 +1,90 @@
-# 雲端戀人 Prototype
+# Cloud Lover Prototype
 
-一個可部署的 AI 伴侶聊天原型，支援多 provider 自動 fallback：
+An AI companion prototype with multi-provider fallback and production-oriented safety controls.
+
+Recommended production routing:
 
 ```text
-Gemini -> NVIDIA -> OpenRouter -> Groq -> Codex(local only) -> Mock
+Gemini -> OpenRouter -> NVIDIA -> Groq -> Mock
 ```
 
-## 本機啟動
+Codex provider is for local development only and is disabled when `NODE_ENV=production`.
+
+## Local Development
 
 ```powershell
 cd C:\Users\hi\Documents\Codex\2026-06-04\new-chat\outputs
 .\start-cloud-lover.ps1
 ```
 
-打開：
+Open:
 
 ```text
 http://localhost:8787
 ```
 
-## 外網分享
+## Temporary Public Sharing
 
-### 臨時給朋友玩
-
-用 tunnel 工具把本機服務公開，例如 Cloudflare Tunnel 或 ngrok：
+Use a tunnel when you only want friends to try it briefly:
 
 ```powershell
 cloudflared tunnel --url http://localhost:8787
 ```
 
-或：
+or:
 
 ```powershell
 ngrok http 8787
 ```
 
-### 正式上線
+This exposes your local machine temporarily. Stop the tunnel when testing is done.
 
-部署到 Render、Railway、Fly.io、VPS 或其他 Node hosting。
+## Production Deploy
 
-部署時設定環境變數，不要上傳 `.env.local`：
+Deploy this folder as a Node app on Render, Railway, Fly.io, a VPS, or another Node hosting platform.
+
+Start command:
 
 ```text
-PROVIDER_ORDER=gemini,nvidia,openrouter,groq,mock
+npm start
+```
+
+Set environment variables in the hosting platform. Do not upload `.env.local`.
+
+```text
+NODE_ENV=production
+PROVIDER_ORDER=gemini,openrouter,nvidia,groq,mock
+ALLOWED_ORIGINS=https://your-domain.example
+EXPOSE_DEBUG=0
+ENABLE_PROVIDER_STATUS=0
+
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-2.5-flash
+
 OPENROUTER_API_KEY=...
 OPENROUTER_MODELS=qwen/qwen3-next-80b-a3b-instruct:free,google/gemma-4-26b-a4b-it:free,google/gemma-4-31b-it:free,moonshotai/kimi-k2.6:free,nvidia/nemotron-3-nano-30b-a3b:free,liquid/lfm-2.5-1.2b-instruct:free
+
 NVIDIA_API_KEY=...
 NVIDIA_MODEL=google/gemma-3n-e2b-it
+
 PROVIDER_TIMEOUT_MS=12000
 CACHE_TTL_MS=120000
 PROVIDER_COOLDOWN_MS=60000
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX=30
+BODY_LIMIT_BYTES=65536
 ```
 
-Codex provider 只適合本機開發，不建議放到正式部署環境。
+## Security Checklist
 
-## Git 注意
+- Rotate any API key that was pasted into chat, screenshots, browser history, or logs.
+- Never commit `.env.local`.
+- Set `NODE_ENV=production` on the host.
+- Set `ALLOWED_ORIGINS` to your real domain.
+- Keep `EXPOSE_DEBUG=0` and `ENABLE_PROVIDER_STATUS=0` in production.
+- Disable Codex provider in production.
+- Set spend caps and rate limits in provider dashboards.
 
-`.env.local` 已被 `.gitignore` 排除，避免 API key 被 commit。
+## Git
+
+`.env.local` and logs are ignored by `.gitignore`.

@@ -5,8 +5,14 @@ services:
     buildCommand: ""
     startCommand: "npm start"
     envVars:
+      - key: NODE_ENV
+        value: production
       - key: PROVIDER_ORDER
-        value: gemini,nvidia,openrouter,groq,mock
+        value: gemini,openrouter,nvidia,groq,mock
+      - key: EXPOSE_DEBUG
+        value: "0"
+      - key: ENABLE_PROVIDER_STATUS
+        value: "0"
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
       - key: NVIDIA_MODEL
@@ -17,3 +23,9 @@ services:
         value: "120000"
       - key: PROVIDER_COOLDOWN_MS
         value: "60000"
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: RATE_LIMIT_MAX
+        value: "30"
+      - key: BODY_LIMIT_BYTES
+        value: "65536"
