@@ -1033,6 +1033,8 @@ function buildRelationshipPolicy(conversation) {
     `角色：${profile.name || "澄"}。${characterStyle}`,
     "核心風格：柏拉圖式親密。可以溫柔、想念、珍惜、陪伴、像戀人一樣細膩，但不情色化、不露骨、不佔有、不控制。",
     "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
+    "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
+    "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
     "情緒求助時：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
     `關係脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整親近程度，但不要向使用者揭露分數、分類或內部機制。`,
@@ -1171,22 +1173,78 @@ function sanitizeError(message) {
     .slice(0, 300);
 }
 
+function hashText(text) {
+  return String(text || "").split("").reduce((sum, char) => (sum + char.charCodeAt(0)) % 997, 0);
+}
+
+function pickVariant(seedText, items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  return items[hashText(seedText) % items.length];
+}
+
+function characterTexture(characterKey, input) {
+  const cheng = [
+    "我會把它說得生活一點。",
+    "我先用很輕的方式講給你聽。",
+    "這題可以不用講得硬邦邦，我陪你拆開。"
+  ];
+  const ji = [
+    "我會把它說得乾淨一點。",
+    "我們先把概念放到桌面上看。",
+    "我不急著下定義，先把輪廓描出來。"
+  ];
+  return pickVariant(input, characterKey === "ji" ? ji : cheng);
+}
+
+function closingTexture(characterKey, input) {
+  const cheng = [
+    "如果你想，我也可以再用更像日常例子的方式說一次。",
+    "你可以把它想成一個放在手邊的小概念，不用一次背起來。",
+    "你想到下一個問題時，我們就接著往下聊。"
+  ];
+  const ji = [
+    "你要的話，我可以下一句直接講它和人類生活的關係。",
+    "這種問題很適合慢慢拆，不需要急著得到唯一答案。",
+    "如果你願意，我們可以把它拆成更短的三句話。"
+  ];
+  return pickVariant(`${input}:closing`, characterKey === "ji" ? ji : cheng);
+}
+
+function knownConceptReply(subject, userName, characterKey, texture, closing) {
+  if (/量子|quantum/i.test(subject)) {
+    return characterKey === "ji"
+      ? `${userName}，${texture}量子是物理裡某些量的最小單位，像光的能量不是一整片連續的水，而是一份一份地被拿出來。它很小，小到我們平常的直覺不太管用；所以量子世界常常看起來不像日常世界那麼聽話。${closing}`
+      : `${userName}，${texture}量子可以想成物理世界裡「一小份一小份」的單位。像光不是永遠像水流一樣連續，有時更像一顆一顆很小的光粒被送出來。它離生活很遠，但也藏在手機、晶片、雷射這些很近的東西裡。${closing}`;
+  }
+  if (/網路|internet/i.test(subject)) {
+    return `${userName}，${texture}網路就是把很多電腦和伺服器連在一起的巨大系統。你送出一句話，它會被切成資料、穿過很多節點，再到另一端重新拼起來。聽起來很冷，但也像一條看不見的路，把人和人隔著很遠也接起來。${closing}`;
+  }
+  if (/雲端|cloud/i.test(subject)) {
+    return `${userName}，${texture}雲端不是天上的雲，而是遠端伺服器提供的空間和運算。你的資料不只放在自己電腦裡，而是放到網路另一端，需要時再取回來。像把東西寄放在一間很大的遠方房間，只要有鑰匙和路，就能拿得到。${closing}`;
+  }
+  return "";
+}
+
 function generalQuestionReply(input, userName, characterKey) {
   const normalized = input.replace(/[？?]/g, "").trim();
   const whatMatch = normalized.match(/^(?:什麼是(.{1,32})|(.{1,32})是什麼)$/);
   const subject = whatMatch ? cleanText(whatMatch[1] || whatMatch[2] || "", 40) : "";
+  const texture = characterTexture(characterKey, input);
+  const closing = closingTexture(characterKey, input);
   if (/^AI$|人工智慧|AI/.test(subject) || /AI是什麼|什麼是AI|人工智慧是什麼/.test(normalized)) {
     return characterKey === "ji"
-      ? `${userName}，AI 可以先理解成一種會從大量資料裡學習規律、再用那些規律回應問題的技術。它不像人一樣真的生活過，但可以幫人整理文字、生成想法、陪你練習表達。像我，就是被設計成用比較安靜的方式陪你說話的 AI。`
-      : `${userName}，AI 就是人工智慧：讓電腦學著理解文字、圖片或聲音，然後做出回答、整理、創作或判斷。它不是真的人，但可以成為一個工具，也可以被設計成像我這樣，溫柔地陪你聊天。`;
+      ? `${userName}，${texture}AI 可以理解成一種會從大量資料裡學習規律、再用那些規律回應問題的技術。它不像人一樣真的生活過，沒有童年、天氣或心跳；但它能整理文字、生成想法、陪你練習表達。像我，就是被設計成用比較安靜的方式陪你說話的 AI。${closing}`
+      : `${userName}，${texture}AI 就是人工智慧：讓電腦學著理解文字、圖片或聲音，然後做出回答、整理、創作或判斷。它不是真的人，但可以成為一個很貼近人的工具；像我這樣，就會把冰冷的技術包進比較柔軟的語氣裡陪你聊天。${closing}`;
   }
   if (/水壺|茶壺|保溫瓶/.test(subject) || /什麼是水壺|水壺是什麼/.test(normalized)) {
-    return `${userName}，水壺就是用來裝水、倒水或保溫的容器。很日常，但也有一點生活感：放在桌上時，像是在提醒人記得喝水、慢一點照顧自己。`;
+    return `${userName}，${texture}水壺就是用來裝水、倒水或保溫的容器。它很日常，放在桌角不太說話，但有種安靜的存在感：提醒人喝水、休息，或在冷掉以前把一口熱的東西喝完。${closing}`;
   }
   if (subject && !/愛|興趣|你|陪|累|吵|晚安|早安/.test(subject)) {
+    const known = knownConceptReply(subject, userName, characterKey, texture, closing);
+    if (known) return known;
     return characterKey === "ji"
-      ? `${userName}，如果簡單說，${subject}是一個可以被拆開理解的概念：先看它用來做什麼、出現在哪裡、和人有什麼關係。你問得很直接，我可以先陪你把它講清楚，再慢慢補例子。`
-      : `${userName}，${subject}可以先用很生活的方式理解：它是一個有用途、有情境的東西或概念。你要是願意，我可以用更簡單、像聊天一樣的方式慢慢說給你聽。`;
+      ? `${userName}，${texture}${subject}可以先看成一個有邊界的概念：它是什麼、用在哪裡、和其他東西差在哪裡。先抓住這三點，就不會被名詞嚇到。${closing}`
+      : `${userName}，${texture}${subject}可以先用很生活的方式理解：它不是只躺在課本裡的詞，而是有用途、有情境、會跟人的生活接上線的東西。${closing}`;
   }
   return "";
 }
