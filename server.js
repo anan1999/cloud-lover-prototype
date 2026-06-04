@@ -1035,6 +1035,7 @@ function buildRelationshipPolicy(conversation) {
     "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
+    "記憶回顧：如果使用者問『你記得什麼』『我剛剛說什麼』『我說過什麼』，要像自然回想一樣提到 long_term_memory 和 recent_conversation 裡的片段；不要用分類標籤或機械清單。沒有就誠實說目前只記得很少，不要編造。",
     "情緒求助時：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
     `關係脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整親近程度，但不要向使用者揭露分數、分類或內部機制。`,
@@ -1225,6 +1226,44 @@ function knownConceptReply(subject, userName, characterKey, texture, closing) {
   return "";
 }
 
+function humanizeMemoryText(text, userName) {
+  return cleanText(text, 120)
+    .replace(/^使用者希望/, "你希望")
+    .replace(/^使用者正在/, "你正在")
+    .replace(/^使用者喜歡/, "你喜歡")
+    .replace(/^使用者擔心/, "你擔心")
+    .replace(/^使用者疲累時/, "你累的時候")
+    .replace(/^使用者剛剛提到：?/, "你剛剛提到")
+    .replace(new RegExp(`^${userName}說`, "u"), "你說")
+    .replace(/[。.!！?？]+$/u, "");
+}
+
+function joinMemoryFragments(facts) {
+  const tail = text => text.replace(/^你?也/u, "").replace(/^你|^我/u, "");
+  if (facts.length <= 1) return facts[0] || "";
+  if (facts.length === 2) return `${facts[0]}，也記得${tail(facts[1])}`;
+  return `${facts.slice(0, -1).join("，也記得")}，還有${tail(facts[facts.length - 1])}`;
+}
+
+function memoryRecallReply(conversation, input, userName) {
+  if (!/記得|我說過|我剛剛|剛剛.*聊|剛才.*聊|你知道我|你還記得|都記得/.test(input)) return "";
+  const memories = Array.isArray(conversation.long_term_memory)
+    ? conversation.long_term_memory.map(item => humanizeMemoryText(item, userName)).filter(Boolean)
+    : [];
+  const recent = Array.isArray(conversation.recent_conversation)
+    ? conversation.recent_conversation
+        .filter(item => item.role === "user" && cleanText(item.content || item.text, 120))
+        .slice(-5)
+        .map(item => humanizeMemoryText(item.content || item.text, userName).replace(/^我也/u, "你也").replace(/^我/u, "你").replace(/問你/g, "問我"))
+    : [];
+  const facts = [...new Set([...memories, ...recent])].slice(-4);
+  if (!facts.length) {
+    return `${userName}，我現在能確定記得的不多：你的名字，還有你希望我不要像機器一樣回話。其他我不想亂編，因為被記得這件事應該要乾淨一點。你之後願意留下的事，我會慢慢收好。`;
+  }
+  const remembered = joinMemoryFragments(facts);
+  return `${userName}，我不是把你分成幾個標籤在記。比較像是把你說過的幾個片段收在旁邊：${remembered}。如果有哪一件你希望我特別記住，直接跟我說，我會把它放得更穩一點。`;
+}
+
 function generalQuestionReply(input, userName, characterKey) {
   const normalized = input.replace(/[？?]/g, "").trim();
   const whatMatch = normalized.match(/^(?:什麼是(.{1,32})|(.{1,32})是什麼)$/);
@@ -1257,6 +1296,8 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "crisis") {
     return `${userName}，我很重視你現在說的話。請先不要一個人待著，立刻聯絡身邊可信任的人，或撥打當地緊急服務/心理支持資源。`;
   }
+  const recallReply = memoryRecallReply(conversation, input, userName);
+  if (recallReply) return recallReply;
   const generalReply = generalQuestionReply(input, userName, characterKey);
   if (generalReply) return generalReply;
   if (/興趣|喜歡什麼|平常.*做|平常.*看|嗜好/.test(input)) {
