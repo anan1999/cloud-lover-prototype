@@ -2,6 +2,7 @@ services:
   - type: web
     name: cloud-lover-prototype
     runtime: node
+    plan: free
     buildCommand: ""
     startCommand: "npm start"
     envVars:
