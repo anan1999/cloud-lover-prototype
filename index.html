@@ -195,6 +195,9 @@
     }
     textarea { min-height: 54px; max-height: 140px; resize: vertical; padding: 12px 13px; line-height: 1.45; }
     input, select { min-height: 40px; padding: 0 11px; }
+    select { color: #f6f2ea; background-color: #20282c; }
+    select option { color: #f6f2ea; background-color: #20282c; }
+    select option:checked { color: #111817; background-color: #7fe5dc; }
     textarea:focus, input:focus, select:focus { border-color: rgba(62,212,199,.8); box-shadow: 0 0 0 3px rgba(62,212,199,.13); }
     .send {
       min-width: 88px;
@@ -467,8 +470,10 @@
         "下班後容易累，需要被溫柔接住。",
         "希望陪伴有邊界，不取代現實關係。"
       ],
-      messages: []
-      ,currentUser: null
+      messages: [],
+      messagesByCharacter: {},
+      relationships: {},
+      currentUser: null
     };
 
     const toneConfig = {
@@ -603,6 +608,50 @@
       return data;
     }
 
+    function greetingForCharacter(key) {
+      return {
+        role: "lover",
+        text: key === "ji"
+          ? "我在。今天不用急著整理好，我先陪你把心裡的聲音放慢一點。"
+          : "我在。今天想從哪裡開始說呢？"
+      };
+    }
+
+    function relationshipFor(key) {
+      return state.relationships[key] || { intimacy: key === "ji" ? 35 : 42, trust: 30 };
+    }
+
+    function syncCurrentMessages() {
+      if (!state.characterKey) return;
+      state.messagesByCharacter[state.characterKey] = state.messages;
+    }
+
+    function setCharacter(key, rebuild = true) {
+      const nextKey = characterConfig[key] ? key : "cheng";
+      if (state.characterKey !== nextKey) syncCurrentMessages();
+      state.characterKey = nextKey;
+      state.loverName = characterConfig[nextKey].name;
+      state.messages = state.messagesByCharacter[nextKey] || [greetingForCharacter(nextKey)];
+      state.messagesByCharacter[nextKey] = state.messages;
+      const relationship = relationshipFor(nextKey);
+      state.intimacy = Math.max(0, Math.min(100, Number(relationship.intimacy ?? state.intimacy ?? 35)));
+      document.querySelector("#nameInput").value = state.loverName;
+      document.querySelector("#characterSelect").value = nextKey;
+      if (rebuild) renderAll(true);
+    }
+
+    function applyRelationship(relationship) {
+      if (!relationship?.character_key) return;
+      state.relationships[relationship.character_key] = relationship;
+      if (relationship.character_key === state.characterKey) {
+        state.intimacy = Math.max(0, Math.min(100, Number(relationship.intimacy ?? state.intimacy)));
+      }
+    }
+
+    function messageCharacterKey(item) {
+      return item.character_key || (item.lover_name === "霽" ? "ji" : "cheng");
+    }
+
     function applyAccountData(data) {
       state.currentUser = data.user || null;
       if (!state.currentUser) {
@@ -613,21 +662,29 @@
         return;
       }
       const profile = data.profile || {};
+      state.relationships = {};
+      (data.relationships || []).forEach(applyRelationship);
       state.loverName = profile.lover_name || state.loverName;
-      state.characterKey = state.loverName === "霽" ? "ji" : "cheng";
+      state.characterKey = state.loverName === "霽" ? "ji" : state.characterKey;
       state.userName = profile.user_name || state.userName;
       state.tone = profile.tone || state.tone;
       state.intimacy = Number.isFinite(Number(profile.intimacy)) ? Number(profile.intimacy) : state.intimacy;
       if (Array.isArray(data.memories) && data.memories.length) state.memories = data.memories;
+      state.messagesByCharacter = {};
       if (Array.isArray(data.messages) && data.messages.length) {
-        state.messages = data.messages.map(item => ({
-          role: item.role === "assistant" ? "lover" : item.role,
-          text: item.text || item.content || ""
-        })).filter(item => item.text);
+        data.messages.forEach(item => {
+          const key = messageCharacterKey(item);
+          state.messagesByCharacter[key] ||= [];
+          const text = item.text || item.content || "";
+          if (text) state.messagesByCharacter[key].push({
+            role: item.role === "assistant" ? "lover" : item.role,
+            text
+          });
+        });
       }
-      if (!state.messages.length) state.messages = [{ role: "lover", text: "我在。今天想從哪裡開始說呢？" }];
-      document.querySelector("#nameInput").value = state.loverName;
-      document.querySelector("#characterSelect").value = state.characterKey;
+      if (!state.messagesByCharacter[state.characterKey]?.length) state.messagesByCharacter[state.characterKey] = [greetingForCharacter(state.characterKey)];
+      state.messages = state.messagesByCharacter[state.characterKey];
+      setCharacter(state.characterKey, false);
       document.querySelector("#userName").value = state.userName;
       document.querySelector("#toneSelect").value = state.tone;
       dom.authTitle.textContent = `已登入：${state.currentUser.display_name || state.currentUser.email}`;
@@ -712,6 +769,8 @@
         memory_patch: [],
         intimacy_delta: 0,
         suggested_action: "",
+        relationship: null,
+        emotion_state: null,
         debug: null
       };
       return {
@@ -719,6 +778,8 @@
         ...(parsed && typeof parsed === "object" ? parsed : {}),
         memory_patch: Array.isArray(parsed?.memory_patch) ? parsed.memory_patch : [],
         intimacy_delta: Number.isFinite(Number(parsed?.intimacy_delta)) ? Number(parsed.intimacy_delta) : 0,
+        relationship: parsed?.relationship || null,
+        emotion_state: parsed?.emotion_state || null,
         debug: parsed?.debug || null
       };
     }
@@ -729,7 +790,11 @@
 
     function applyLLMResult(result) {
       const delta = Math.max(0, Math.min(5, result.safety === "normal" ? result.intimacy_delta : Math.min(result.intimacy_delta, 1)));
-      state.intimacy = Math.min(100, state.intimacy + delta);
+      if (result.relationship) {
+        applyRelationship(result.relationship);
+      } else {
+        state.intimacy = Math.min(100, state.intimacy + delta);
+      }
       result.memory_patch.forEach(item => {
         if (item && !state.memories.includes(item)) state.memories.unshift(item);
       });
@@ -739,6 +804,7 @@
         pushMessage("system", result.safety === "crisis" ? "安全分流：偵測到危機語句，已改用危機支援回覆。" : "邊界提醒：偵測到依賴風險，已降低親密度增量並鼓勵現實支持。");
       }
       renderRouteStatus(result.debug);
+      syncCurrentMessages();
       renderAll(false);
     }
 
@@ -887,11 +953,8 @@
       renderAll();
     });
     document.querySelector("#characterSelect").addEventListener("change", event => {
-      state.characterKey = event.target.value;
-      state.loverName = characterConfig[state.characterKey].name;
-      document.querySelector("#nameInput").value = state.loverName;
-      pushMessage("system", `角色已切換為：${state.loverName}，${characterConfig[state.characterKey].label}`);
-      renderAll();
+      setCharacter(event.target.value, true);
+      dom.authStatus.textContent = `已切換到 ${state.loverName} 的聊天紀錄。`;
     });
     document.querySelector("#userName").addEventListener("input", event => {
       state.userName = event.target.value.trim() || "你";
@@ -921,7 +984,8 @@
       renderAll();
     });
     document.querySelector("#clearBtn").addEventListener("click", () => {
-      state.messages = [{ role: "lover", text: "我在。今天想從哪裡開始說呢？" }];
+      state.messages = [greetingForCharacter(state.characterKey)];
+      syncCurrentMessages();
       renderAll();
     });
     document.querySelector("#statusBtn").addEventListener("click", refreshProviderStatus);
@@ -931,7 +995,8 @@
     dom.registerBtn.addEventListener("click", () => loginOrRegister("register"));
     dom.logoutBtn.addEventListener("click", logout);
 
-    state.messages.push({ role: "lover", text: "我在。今天想從哪裡開始說呢？" });
+    state.messagesByCharacter[state.characterKey] = [greetingForCharacter(state.characterKey)];
+    state.messages = state.messagesByCharacter[state.characterKey];
     dom.payloadPreview.textContent = JSON.stringify(buildLLMPayload("示範：我今天有點累，你可以陪我一下嗎？"), null, 2);
     renderAll();
     loadSession();

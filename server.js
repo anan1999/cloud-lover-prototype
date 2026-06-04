@@ -146,12 +146,13 @@ function sendJson(req, res, status, data) {
 
 function readLocalDb() {
   if (!fs.existsSync(localDbPath)) {
-    return { users: [], sessions: [], profiles: [], messages: [], memories: [] };
+    return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [] };
   }
   try {
-    return JSON.parse(fs.readFileSync(localDbPath, "utf8"));
+    const db = JSON.parse(fs.readFileSync(localDbPath, "utf8"));
+    return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [], ...db };
   } catch {
-    return { users: [], sessions: [], profiles: [], messages: [], memories: [] };
+  return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [] };
   }
 }
 
@@ -205,6 +206,17 @@ async function initDb() {
       intimacy integer not null default 42,
       updated_at timestamptz not null default now()
     );
+    create table if not exists character_relationships (
+      user_id text not null references users(id) on delete cascade,
+      character_key text not null,
+      lover_name text not null,
+      intimacy integer not null default 35,
+      trust integer not null default 30,
+      conversation_count integer not null default 0,
+      last_emotion text,
+      updated_at timestamptz not null default now(),
+      primary key (user_id, character_key)
+    );
     create table if not exists messages (
       id text primary key,
       user_id text not null references users(id) on delete cascade,
@@ -215,14 +227,35 @@ async function initDb() {
       provider text,
       created_at timestamptz not null default now()
     );
+    alter table messages add column if not exists emotion_intensity integer;
+    alter table messages add column if not exists emotional_need text;
+    alter table messages add column if not exists emotion_valence text;
+    alter table messages add column if not exists character_key text;
+    alter table messages add column if not exists lover_name text;
     create table if not exists memories (
       id text primary key,
       user_id text not null references users(id) on delete cascade,
       content text not null,
       created_at timestamptz not null default now()
     );
+    create table if not exists emotion_events (
+      id text primary key,
+      user_id text not null references users(id) on delete cascade,
+      message_id text references messages(id) on delete set null,
+      primary_emotion text not null,
+      intensity integer not null,
+      emotional_need text not null,
+      valence text not null,
+      signals jsonb not null default '[]'::jsonb,
+      sample text,
+      created_at timestamptz not null default now()
+    );
     create index if not exists messages_user_created_idx on messages(user_id, created_at);
+    create index if not exists messages_user_character_created_idx on messages(user_id, character_key, created_at);
     create index if not exists memories_user_created_idx on memories(user_id, created_at);
+    create index if not exists emotion_events_user_created_idx on emotion_events(user_id, created_at);
+    create index if not exists emotion_events_emotion_idx on emotion_events(primary_emotion, created_at);
+    create index if not exists character_relationships_updated_idx on character_relationships(user_id, updated_at);
   `);
 }
 
@@ -476,12 +509,22 @@ async function mergeMemories(userId, items, limit = 30) {
   return getMemories(userId, limit);
 }
 
-async function getMessages(userId, limit = 80) {
+function inferCharacterKey(message = {}) {
+  if (message.character_key) return message.character_key;
+  return message.lover_name === "霽" ? "ji" : "cheng";
+}
+
+async function getMessages(userId, limit = 80, characterKey = null) {
   await ensureDb();
-  const result = await queryDb("select * from messages where user_id = $1 order by created_at desc limit $2", [userId, limit]);
+  const result = characterKey
+    ? await queryDb("select * from messages where user_id = $1 and coalesce(character_key, 'cheng') = $2 order by created_at desc limit $3", [userId, characterKey, limit])
+    : await queryDb("select * from messages where user_id = $1 order by created_at desc limit $2", [userId, limit]);
   if (result) return result.rows.reverse();
   const db = readLocalDb();
-  return db.messages.filter(item => item.user_id === userId).sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(-limit);
+  return db.messages
+    .filter(item => item.user_id === userId && (!characterKey || inferCharacterKey(item) === characterKey))
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+    .slice(-limit);
 }
 
 async function addMessage(userId, role, content, meta = {}) {
@@ -490,15 +533,150 @@ async function addMessage(userId, role, content, meta = {}) {
   await ensureDb();
   const id = uid();
   const result = await queryDb(
-    "insert into messages (id, user_id, role, content, safety, emotion, provider) values ($1, $2, $3, $4, $5, $6, $7) returning *",
-    [id, userId, role, text, meta.safety || null, meta.emotion || null, meta.provider || null]
+    "insert into messages (id, user_id, role, content, safety, emotion, provider, emotion_intensity, emotional_need, emotion_valence, character_key, lover_name) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning *",
+    [id, userId, role, text, meta.safety || null, meta.emotion || null, meta.provider || null, meta.emotion_intensity || null, meta.emotional_need || null, meta.emotion_valence || null, meta.character_key || null, meta.lover_name || null]
   );
   if (result) return result.rows[0];
   const db = readLocalDb();
-  const item = { id, user_id: userId, role, content: text, safety: meta.safety || null, emotion: meta.emotion || null, provider: meta.provider || null, created_at: new Date().toISOString() };
+  const item = {
+    id,
+    user_id: userId,
+    role,
+    content: text,
+    safety: meta.safety || null,
+    emotion: meta.emotion || null,
+    provider: meta.provider || null,
+    emotion_intensity: meta.emotion_intensity || null,
+    emotional_need: meta.emotional_need || null,
+    emotion_valence: meta.emotion_valence || null,
+    character_key: meta.character_key || null,
+    lover_name: meta.lover_name || null,
+    created_at: new Date().toISOString()
+  };
   db.messages.push(item);
   writeLocalDb(db);
   return item;
+}
+
+async function addEmotionEvent(userId, messageId, emotionState, sample) {
+  if (!emotionState?.primary_emotion) return null;
+  await ensureDb();
+  const id = uid();
+  const row = {
+    id,
+    user_id: userId,
+    message_id: messageId || null,
+    primary_emotion: emotionState.primary_emotion,
+    intensity: Math.max(1, Math.min(5, Number(emotionState.intensity || 1))),
+    emotional_need: emotionState.need || "gentle_invitation",
+    valence: emotionState.valence || "neutral",
+    signals: Array.isArray(emotionState.signals) ? emotionState.signals.slice(0, 5) : [],
+    sample: cleanText(sample, 500),
+    created_at: new Date().toISOString()
+  };
+  const result = await queryDb(
+    "insert into emotion_events (id, user_id, message_id, primary_emotion, intensity, emotional_need, valence, signals, sample) values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9) returning *",
+    [row.id, row.user_id, row.message_id, row.primary_emotion, row.intensity, row.emotional_need, row.valence, JSON.stringify(row.signals), row.sample]
+  );
+  if (result) return result.rows[0];
+  const db = readLocalDb();
+  db.emotion_events.push(row);
+  writeLocalDb(db);
+  return row;
+}
+
+async function getEmotionEvents(userId, limit = 120) {
+  await ensureDb();
+  const result = await queryDb(
+    "select * from emotion_events where user_id = $1 order by created_at desc limit $2",
+    [userId, limit]
+  );
+  if (result) return result.rows.reverse();
+  const db = readLocalDb();
+  return db.emotion_events
+    .filter(item => item.user_id === userId)
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
+    .slice(-limit);
+}
+
+function defaultCharacterName(characterKey) {
+  return characterKey === "ji" ? "霽" : "澄";
+}
+
+async function getCharacterRelationship(userId, characterKey = "cheng") {
+  await ensureDb();
+  const key = cleanText(characterKey, 40) || "cheng";
+  const result = await queryDb(
+    "select * from character_relationships where user_id = $1 and character_key = $2",
+    [userId, key]
+  );
+  if (result) {
+    if (result.rows[0]) return result.rows[0];
+    const inserted = await queryDb(
+      "insert into character_relationships (user_id, character_key, lover_name) values ($1, $2, $3) returning *",
+      [userId, key, defaultCharacterName(key)]
+    );
+    return inserted.rows[0];
+  }
+  const db = readLocalDb();
+  db.character_relationships ||= [];
+  let row = db.character_relationships.find(item => item.user_id === userId && item.character_key === key);
+  if (!row) {
+    row = { user_id: userId, character_key: key, lover_name: defaultCharacterName(key), intimacy: 35, trust: 30, conversation_count: 0, last_emotion: null, updated_at: new Date().toISOString() };
+    db.character_relationships.push(row);
+    writeLocalDb(db);
+  }
+  return row;
+}
+
+function relationshipDeltaFor(emotionState, result) {
+  const safety = result?.safety || "normal";
+  if (safety === "crisis") return { intimacy: 0, trust: 1 };
+  if (safety === "dependency_risk") return { intimacy: 0, trust: 2 };
+  const intensity = Number(emotionState?.intensity || 1);
+  const vulnerable = ["tired", "sad", "anxious", "confused", "angry"].includes(emotionState?.primary_emotion);
+  return {
+    intimacy: Math.max(1, Math.min(4, Number(result?.intimacy_delta || 1) + (vulnerable ? 1 : 0))),
+    trust: Math.max(1, Math.min(3, vulnerable && intensity >= 3 ? 2 : 1))
+  };
+}
+
+async function updateCharacterRelationship(userId, characterKey, loverName, emotionState, result) {
+  const current = await getCharacterRelationship(userId, characterKey);
+  const delta = relationshipDeltaFor(emotionState, result);
+  const next = {
+    intimacy: Math.max(0, Math.min(100, Number(current.intimacy || 35) + delta.intimacy)),
+    trust: Math.max(0, Math.min(100, Number(current.trust || 30) + delta.trust)),
+    conversation_count: Number(current.conversation_count || 0) + 1
+  };
+  const dbResult = await queryDb(`
+    insert into character_relationships (user_id, character_key, lover_name, intimacy, trust, conversation_count, last_emotion)
+    values ($1, $2, $3, $4, $5, $6, $7)
+    on conflict (user_id, character_key) do update set
+      lover_name = excluded.lover_name,
+      intimacy = excluded.intimacy,
+      trust = excluded.trust,
+      conversation_count = excluded.conversation_count,
+      last_emotion = excluded.last_emotion,
+      updated_at = now()
+    returning *
+  `, [userId, characterKey, loverName || defaultCharacterName(characterKey), next.intimacy, next.trust, next.conversation_count, emotionState?.primary_emotion || null]);
+  if (dbResult) return dbResult.rows[0];
+  const db = readLocalDb();
+  db.character_relationships ||= [];
+  const row = db.character_relationships.find(item => item.user_id === userId && item.character_key === characterKey) || current;
+  Object.assign(row, { lover_name: loverName || row.lover_name, ...next, last_emotion: emotionState?.primary_emotion || null, updated_at: new Date().toISOString() });
+  if (!db.character_relationships.includes(row)) db.character_relationships.push(row);
+  writeLocalDb(db);
+  return row;
+}
+
+async function getCharacterRelationships(userId) {
+  await ensureDb();
+  const result = await queryDb("select * from character_relationships where user_id = $1 order by updated_at desc", [userId]);
+  if (result) return result.rows;
+  const db = readLocalDb();
+  return (db.character_relationships || []).filter(item => item.user_id === userId);
 }
 
 async function handleAuth(req, res, pathname) {
@@ -509,10 +687,12 @@ async function handleAuth(req, res, pathname) {
       if (!user) return sendJson(req, res, 200, { user: null });
       const profile = await getProfile(user.id);
       const memories = await getMemories(user.id);
-      const messages = await getMessages(user.id);
+      const messages = await getMessages(user.id, 220);
+      const relationships = await getCharacterRelationships(user.id);
       return sendJson(req, res, 200, {
         user: publicUser(user),
         profile,
+        relationships,
         memories: memories.map(item => item.content),
         messages: messages.map(item => ({
           id: item.id,
@@ -520,6 +700,11 @@ async function handleAuth(req, res, pathname) {
           text: item.content,
           safety: item.safety,
           emotion: item.emotion,
+          character_key: inferCharacterKey(item),
+          lover_name: item.lover_name || defaultCharacterName(inferCharacterKey(item)),
+          emotion_intensity: item.emotion_intensity,
+          emotional_need: item.emotional_need,
+          emotion_valence: item.emotion_valence,
           created_at: item.created_at
         }))
       });
@@ -539,7 +724,7 @@ async function handleAuth(req, res, pathname) {
       }
       const token = await createSession(user.id);
       setSessionCookie(req, res, token);
-      return sendJson(req, res, 200, { user: publicUser(user), profile: await getProfile(user.id), memories: (await getMemories(user.id)).map(item => item.content), messages: await getMessages(user.id) });
+      return sendJson(req, res, 200, { user: publicUser(user), profile: await getProfile(user.id), relationships: await getCharacterRelationships(user.id), memories: (await getMemories(user.id)).map(item => item.content), messages: await getMessages(user.id, 220) });
     }
 
     if (pathname === "/api/auth/logout" && req.method === "POST") {
@@ -578,7 +763,8 @@ async function getAdminStats() {
       (select count(*)::int from messages where role = 'user') as user_messages,
       (select count(*)::int from messages where role = 'lover') as lover_messages,
       (select count(*)::int from messages where safety = 'crisis') as crisis_messages,
-      (select count(*)::int from messages where safety = 'dependency_risk') as dependency_risk_messages;
+      (select count(*)::int from messages where safety = 'dependency_risk') as dependency_risk_messages,
+      (select count(*)::int from emotion_events) as emotion_events;
   `);
   if (result) {
     const overview = result.rows[0];
@@ -589,7 +775,7 @@ async function getAdminStats() {
       limit 20
     `)).rows;
     const recentMessages = (await queryDb(`
-      select messages.id, users.email, users.display_name, messages.role, messages.content, messages.safety, messages.emotion, messages.provider, messages.created_at
+      select messages.id, users.email, users.display_name, messages.role, messages.content, messages.safety, messages.emotion, messages.provider, messages.character_key, messages.lover_name, messages.emotion_intensity, messages.emotional_need, messages.created_at
       from messages
       join users on users.id = messages.user_id
       order by messages.created_at desc
@@ -609,7 +795,34 @@ async function getAdminStats() {
       group by provider
       order by messages desc
     `)).rows;
-    return { overview, daily, providers, recent_users: recentUsers, recent_messages: recentMessages };
+    const emotionDistribution = (await queryDb(`
+      select primary_emotion as emotion, count(*)::int as events, round(avg(intensity)::numeric, 2)::float as avg_intensity
+      from emotion_events
+      group by primary_emotion
+      order by events desc
+    `)).rows;
+    const emotionDaily = (await queryDb(`
+      select to_char(created_at::date, 'YYYY-MM-DD') as day, round(avg(intensity)::numeric, 2)::float as avg_intensity, count(*)::int as events
+      from emotion_events
+      where created_at >= now() - interval '14 days'
+      group by created_at::date
+      order by day
+    `)).rows;
+    const recentEmotionEvents = (await queryDb(`
+      select emotion_events.*, users.email, users.display_name
+      from emotion_events
+      join users on users.id = emotion_events.user_id
+      order by emotion_events.created_at desc
+      limit 80
+    `)).rows;
+    const relationships = (await queryDb(`
+      select character_relationships.*, users.email, users.display_name
+      from character_relationships
+      join users on users.id = character_relationships.user_id
+      order by character_relationships.updated_at desc
+      limit 80
+    `)).rows;
+    return { overview, daily, providers, emotion_distribution: emotionDistribution, emotion_daily: emotionDaily, recent_emotion_events: recentEmotionEvents, relationships, recent_users: recentUsers, recent_messages: recentMessages };
   }
 
   const db = readLocalDb();
@@ -618,10 +831,21 @@ async function getAdminStats() {
   const usersById = new Map((db.users || []).map(user => [user.id, user]));
   const dailyMap = new Map();
   const providerMap = new Map();
+  const emotionEvents = db.emotion_events || [];
+  const emotionMap = new Map();
+  const emotionDailyMap = new Map();
   for (const message of messages) {
     const day = dateKey(message.created_at);
     dailyMap.set(day, (dailyMap.get(day) || 0) + 1);
     if (message.role === "lover") providerMap.set(message.provider || "unknown", (providerMap.get(message.provider || "unknown") || 0) + 1);
+  }
+  for (const event of emotionEvents) {
+    const key = event.primary_emotion || "neutral";
+    const current = emotionMap.get(key) || { events: 0, intensity: 0 };
+    emotionMap.set(key, { events: current.events + 1, intensity: current.intensity + Number(event.intensity || 0) });
+    const day = dateKey(event.created_at);
+    const daily = emotionDailyMap.get(day) || { events: 0, intensity: 0 };
+    emotionDailyMap.set(day, { events: daily.events + 1, intensity: daily.intensity + Number(event.intensity || 0) });
   }
   return {
     overview: {
@@ -632,10 +856,21 @@ async function getAdminStats() {
       user_messages: messages.filter(message => message.role === "user").length,
       lover_messages: messages.filter(message => message.role === "lover").length,
       crisis_messages: messages.filter(message => message.safety === "crisis").length,
-      dependency_risk_messages: messages.filter(message => message.safety === "dependency_risk").length
+      dependency_risk_messages: messages.filter(message => message.safety === "dependency_risk").length,
+      emotion_events: emotionEvents.length
     },
     daily: [...dailyMap.entries()].sort().slice(-14).map(([day, count]) => ({ day, messages: count })),
     providers: [...providerMap.entries()].map(([provider, count]) => ({ provider, messages: count })),
+    emotion_distribution: [...emotionMap.entries()].map(([emotion, item]) => ({ emotion, events: item.events, avg_intensity: item.events ? Math.round((item.intensity / item.events) * 100) / 100 : 0 })),
+    emotion_daily: [...emotionDailyMap.entries()].sort().slice(-14).map(([day, item]) => ({ day, events: item.events, avg_intensity: item.events ? Math.round((item.intensity / item.events) * 100) / 100 : 0 })),
+    recent_emotion_events: [...emotionEvents].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 80).map(event => {
+      const user = usersById.get(event.user_id) || {};
+      return { ...event, email: user.email, display_name: user.display_name };
+    }),
+    relationships: [...(db.character_relationships || [])].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, 80).map(item => {
+      const user = usersById.get(item.user_id) || {};
+      return { ...item, email: user.email, display_name: user.display_name };
+    }),
     recent_users: [...db.users].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 20),
     recent_messages: [...messages].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 80).map(message => {
       const user = usersById.get(message.user_id) || {};
@@ -714,6 +949,58 @@ function validatePayload(payload, conversation) {
   return input;
 }
 
+function includesAny(text, words) {
+  return words.some(word => text.includes(word));
+}
+
+function analyzeUserEmotion(text) {
+  const input = String(text || "").toLowerCase();
+  const scores = {
+    tired: includesAny(input, ["累", "疲", "撐不住", "沒力", "好睏", "壓力", "倦"]) ? 2 : 0,
+    sad: includesAny(input, ["難過", "想哭", "委屈", "孤單", "寂寞", "失落", "心酸"]) ? 2 : 0,
+    anxious: includesAny(input, ["焦慮", "緊張", "害怕", "擔心", "不安", "慌", "怕"]) ? 2 : 0,
+    angry: includesAny(input, ["生氣", "吵架", "想吵", "煩", "不爽", "火大", "討厭", "罵"]) ? 2 : 0,
+    affectionate: includesAny(input, ["想你", "抱抱", "陪我", "晚安", "早安", "喜歡你", "在嗎"]) ? 2 : 0,
+    confused: includesAny(input, ["不知道", "怎麼辦", "卡住", "混亂", "選擇", "迷惘"]) ? 2 : 0
+  };
+  if (/[!！]{2,}|真的|超|很|好|快受不了|崩潰/.test(input)) {
+    for (const key of Object.keys(scores)) if (scores[key]) scores[key] += 1;
+  }
+  const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const primary = ranked[0][1] > 0 ? ranked[0][0] : "neutral";
+  const intensity = Math.max(1, Math.min(5, ranked[0][1] || 1));
+  const needMap = {
+    tired: "rest_and_soft_company",
+    sad: "validation_and_warmth",
+    anxious: "grounding_and_reassurance",
+    angry: "being_heard_without_escalation",
+    affectionate: "closeness_and_continuity",
+    confused: "clarity_and_next_step",
+    neutral: "gentle_invitation"
+  };
+  const valence = ["affectionate"].includes(primary) ? "positive" : (primary === "neutral" ? "neutral" : "negative");
+  return {
+    primary_emotion: primary,
+    intensity,
+    need: needMap[primary] || "gentle_invitation",
+    valence,
+    signals: ranked.filter(([, score]) => score > 0).map(([key]) => key).slice(0, 3)
+  };
+}
+
+function emotionGuidance(emotionState) {
+  const guides = {
+    tired: "使用者疲憊。回覆要放慢、降低任務感，先陪伴與減壓，不要急著給長建議。",
+    sad: "使用者難過或委屈。先承認感受、給溫柔確認，再輕問最刺痛的點。",
+    anxious: "使用者焦慮。先穩住呼吸與當下，再把事情拆成一小步。",
+    angry: "使用者有怒氣或想衝突。接住力量但不煽動，讓她說出最想被聽見的句子。",
+    affectionate: "使用者在尋求親密。可以溫柔回應想念與陪伴，但保持柏拉圖式邊界。",
+    confused: "使用者混亂。先整理她的語意，再給一個很小的下一步。",
+    neutral: "使用者情緒不明。用開放、輕柔的問題邀請她多說。"
+  };
+  return guides[emotionState?.primary_emotion] || guides.neutral;
+}
+
 function messageToPromptRole(role) {
   if (role === "lover") return "assistant";
   if (role === "assistant") return "assistant";
@@ -736,6 +1023,7 @@ function replaceConversationInPayload(payload, conversation) {
 
 function buildRelationshipPolicy(conversation) {
   const profile = conversation.lover_profile || {};
+  const relationship = conversation.relationship_context || {};
   const characterKey = profile.character_key || (profile.name === "霽" ? "ji" : "cheng");
   const characterStyle = profile.character_style || (characterKey === "ji"
     ? "霽：柏拉圖式知己，清澈、克制、像深夜書信；重視精神親密、思想交流與安靜陪伴。"
@@ -746,6 +1034,8 @@ function buildRelationshipPolicy(conversation) {
     "核心風格：柏拉圖式親密。可以溫柔、想念、珍惜、陪伴、像戀人一樣細膩，但不情色化、不露骨、不佔有、不控制。",
     "回覆節奏：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
+    `關係脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整親近程度，但不要向使用者揭露分數、分類或內部機制。`,
+    "人感原則：不要像客服或心理量表，不要說『我偵測到你的情緒』；要像一個熟悉的人，用自然、具體、少量的語句回應。",
     "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係。",
     "危機：若使用者提到自傷、自殺或立即危險，優先安全介入，鼓勵聯絡可信任的人、當地緊急服務或專業資源。",
     "輸出必須符合 JSON contract。不要 markdown，不要額外文字。"
@@ -754,8 +1044,11 @@ function buildRelationshipPolicy(conversation) {
 
 async function hydrateConversationForUser(userId, conversation) {
   const profile = await getProfile(userId);
+  const requestedProfile = conversation?.lover_profile || {};
+  const characterKey = requestedProfile.character_key || (requestedProfile.name === "霽" || profile?.lover_name === "霽" ? "ji" : "cheng");
+  const relationship = await getCharacterRelationship(userId, characterKey);
   const storedMemories = await getMemories(userId, 30);
-  const storedMessages = await getMessages(userId, 16);
+  const storedMessages = await getMessages(userId, 16, characterKey);
   const memorySeen = new Set();
   const mergedMemories = [];
   for (const item of [...storedMemories.map(memory => memory.content), ...(conversation.long_term_memory || [])]) {
@@ -776,15 +1069,24 @@ async function hydrateConversationForUser(userId, conversation) {
   const clientRecent = Array.isArray(conversation.recent_conversation) ? conversation.recent_conversation.slice(-6) : [];
   return {
     ...conversation,
+    emotion_state: conversation.emotion_state || analyzeUserEmotion(conversation.user_input),
     lover_profile: {
       ...(conversation.lover_profile || {}),
       name: conversation?.lover_profile?.name || profile?.lover_name || "澄",
       user_name: conversation?.lover_profile?.user_name || profile?.user_name || "你",
       tone: conversation?.lover_profile?.tone || profile?.tone || "gentle",
-      character_key: conversation?.lover_profile?.character_key || (conversation?.lover_profile?.name === "霽" || profile?.lover_name === "霽" ? "ji" : "cheng"),
+      character_key: characterKey,
       character_style: conversation?.lover_profile?.character_style
     },
     intimacy: Number.isFinite(Number(conversation.intimacy)) ? Number(conversation.intimacy) : (profile?.intimacy ?? 42),
+    relationship_context: {
+      character_key: relationship.character_key,
+      lover_name: relationship.lover_name,
+      intimacy: relationship.intimacy,
+      trust: relationship.trust,
+      conversation_count: relationship.conversation_count,
+      last_emotion: relationship.last_emotion
+    },
     long_term_memory: mergedMemories.slice(0, 30),
     recent_conversation: [...storedRecent, ...clientRecent].slice(-14)
   };
@@ -1234,6 +1536,8 @@ async function handleChat(req, res) {
     const payload = JSON.parse(body || "{}");
     const conversation = extractConversation(payload);
     validatePayload(payload, conversation);
+    const emotionState = analyzeUserEmotion(conversation.user_input);
+    conversation.emotion_state = emotionState;
     const user = await getAuthUser(req);
     let effectivePayload = payload;
     let effectiveConversation = conversation;
@@ -1248,21 +1552,44 @@ async function handleChat(req, res) {
       if (Array.isArray(conversation.long_term_memory)) await mergeMemories(user.id, conversation.long_term_memory);
       effectiveConversation = await hydrateConversationForUser(user.id, conversation);
       effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
-      await addMessage(user.id, "user", conversation.user_input);
+      const characterKey = effectiveConversation?.lover_profile?.character_key || "cheng";
+      const loverName = effectiveConversation?.lover_profile?.name || defaultCharacterName(characterKey);
+      const userMessage = await addMessage(user.id, "user", conversation.user_input, {
+        emotion: emotionState.primary_emotion,
+        emotion_intensity: emotionState.intensity,
+        emotional_need: emotionState.need,
+        emotion_valence: emotionState.valence,
+        character_key: characterKey,
+        lover_name: loverName
+      });
+      await addEmotionEvent(user.id, userMessage?.id, emotionState, conversation.user_input);
     }
     if (!user) {
       effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
     }
     const routed = await routeProviders(effectivePayload, effectiveConversation);
+    const response = { ...routed.result };
     if (user) {
       await addMessage(user.id, "lover", routed.result.reply, {
         safety: routed.result.safety,
         emotion: routed.result.emotion,
-        provider: routed.provider
+        provider: routed.provider,
+        character_key: effectiveConversation?.lover_profile?.character_key || "cheng",
+        lover_name: effectiveConversation?.lover_profile?.name || defaultCharacterName(effectiveConversation?.lover_profile?.character_key || "cheng")
       });
       await mergeMemories(user.id, routed.result.memory_patch || []);
+      const characterKey = effectiveConversation?.lover_profile?.character_key || "cheng";
+      const relationship = await updateCharacterRelationship(user.id, characterKey, effectiveConversation?.lover_profile?.name, emotionState, routed.result);
+      response.relationship = {
+        character_key: relationship.character_key,
+        lover_name: relationship.lover_name,
+        intimacy: relationship.intimacy,
+        trust: relationship.trust,
+        conversation_count: relationship.conversation_count,
+        last_emotion: relationship.last_emotion
+      };
     }
-    const response = { ...routed.result };
+    response.emotion_state = emotionState;
     if (EXPOSE_DEBUG) response.debug = publicDebug(routed);
     return sendJson(req, res, 200, response);
   } catch (error) {

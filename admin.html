@@ -164,6 +164,34 @@
 
       <section class="grid two">
         <div class="card">
+          <h2>情緒分布</h2>
+          <div class="bars" id="emotionBars"></div>
+        </div>
+        <div class="card">
+          <h2>情緒強度趨勢</h2>
+          <div class="bars" id="emotionDailyBars"></div>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <div class="card">
+          <h2>角色關係</h2>
+          <table>
+            <thead><tr><th>使用者</th><th>角色</th><th>親密</th><th>信任</th><th>互動</th><th>最近情緒</th></tr></thead>
+            <tbody id="relationshipRows"></tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h2>最近情緒事件</h2>
+          <table>
+            <thead><tr><th>時間</th><th>使用者</th><th>情緒</th><th>強度</th><th>需求</th></tr></thead>
+            <tbody id="emotionRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <div class="card">
           <h2>最近聊天</h2>
           <table>
             <thead><tr><th>時間</th><th>使用者</th><th>角色</th><th>內容</th><th>狀態</th></tr></thead>
@@ -226,6 +254,7 @@
         ["記憶數", overview.memories],
         ["使用者訊息", overview.user_messages],
         ["AI 回覆", overview.lover_messages],
+        ["情緒事件", overview.emotion_events],
         ["依賴風險", overview.dependency_risk_messages],
         ["危機訊息", overview.crisis_messages]
       ];
@@ -256,6 +285,25 @@
       $("#userRows").innerHTML = data.recent_users.map(item => `
         <tr><td>${fmt(item.created_at)}</td><td>${escapeHtml(item.email)}</td><td>${escapeHtml(item.display_name)}</td></tr>
       `).join("");
+      $("#relationshipRows").innerHTML = (data.relationships || []).map(item => `
+        <tr>
+          <td>${escapeHtml(item.email || item.display_name || "-")}</td>
+          <td>${escapeHtml(item.lover_name || item.character_key || "-")}</td>
+          <td>${Number(item.intimacy || 0)}</td>
+          <td>${Number(item.trust || 0)}</td>
+          <td>${Number(item.conversation_count || 0)}</td>
+          <td>${escapeHtml(item.last_emotion || "-")}</td>
+        </tr>
+      `).join("") || `<tr><td colspan="6" class="muted">尚無角色關係資料</td></tr>`;
+      $("#emotionRows").innerHTML = (data.recent_emotion_events || []).map(item => `
+        <tr>
+          <td>${fmt(item.created_at)}</td>
+          <td>${escapeHtml(item.email || item.display_name || "-")}</td>
+          <td>${escapeHtml(item.primary_emotion || "-")}</td>
+          <td>${Number(item.intensity || 0)}</td>
+          <td>${escapeHtml(item.emotional_need || "-")}</td>
+        </tr>
+      `).join("") || `<tr><td colspan="5" class="muted">尚無情緒事件</td></tr>`;
     }
 
     async function loadStats() {
@@ -268,6 +316,8 @@
       renderMetrics(data.overview);
       renderBars("#dailyBars", data.daily, "day");
       renderBars("#providerBars", data.providers, "provider");
+      renderBars("#emotionBars", (data.emotion_distribution || []).map(item => ({ emotion: item.emotion, messages: item.events })), "emotion");
+      renderBars("#emotionDailyBars", (data.emotion_daily || []).map(item => ({ day: item.day, messages: item.avg_intensity })), "day");
       renderTables(data);
     }
 
