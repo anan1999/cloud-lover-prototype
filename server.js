@@ -15,6 +15,7 @@ const BODY_LIMIT_BYTES = Number(process.env.BODY_LIMIT_BYTES || 64 * 1024);
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || (IS_PROD ? 30 : 120));
 const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 12_000);
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || PROVIDER_TIMEOUT_MS);
 const PROVIDER_COOLDOWN_MS = Number(process.env.PROVIDER_COOLDOWN_MS || 60_000);
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 120_000);
 const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60_000);
@@ -48,13 +49,13 @@ const ENABLE_CODEX_PROVIDER = process.env.ENABLE_CODEX_PROVIDER === "1";
 const ENABLE_MOCK_FALLBACK = process.env.ENABLE_MOCK_FALLBACK === "1" || (!IS_PROD && process.env.ENABLE_MOCK_FALLBACK !== "0");
 const CODEX_COMMAND = process.env.CODEX_COMMAND || "codex";
 const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.5";
-const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 3333);
+const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 60_000);
 const CODEX_BACKEND = process.env.CODEX_BACKEND || "api";
 const CODEX_API_KEY = process.env.CODEX_API_KEY || OPENAI_API_KEY;
 const CODEX_WORKER_URL = process.env.CODEX_WORKER_URL || "";
 const CODEX_WORKER_TOKEN = process.env.CODEX_WORKER_TOKEN || "";
 const RAW_PROVIDER_ORDER = listFromEnv("PROVIDER_ORDER", IS_PROD
-  ? ["gemini", "codex"]
+  ? ["gemini", "codex", "mock"]
   : ["gemini", "openrouter", "nvidia", "groq", "codex", "mock"]
 );
 const PROVIDER_ORDER = RAW_PROVIDER_ORDER.filter(provider => {
@@ -1234,7 +1235,8 @@ function markProviderSuccess(provider, latencyMs) {
 function markProviderFailure(provider, error) {
   const health = getProviderHealth(provider);
   const failures = health.failures + 1;
-  const shouldCooldown = provider !== "mock" && failures >= 2;
+  const alwaysTryProvider = provider === "gemini" || provider === "codex";
+  const shouldCooldown = provider !== "mock" && !alwaysTryProvider && failures >= 2;
   providerHealth.set(provider, {
     ...health,
     failures,
@@ -1696,7 +1698,7 @@ async function callGemini(payload) {
   const userText = payload.messages.filter(message => message.role === "user").map(message => message.content).join("\n\n");
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
     method: "POST",
-    signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+    signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
     headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: `${systemText}\n\nReturn valid JSON only. No markdown.` }] },
@@ -2043,6 +2045,7 @@ function handleProviderStatus(req, res) {
       worker_configured: Boolean(CODEX_WORKER_URL),
       cli_command: CODEX_COMMAND
     },
+    gemini: { timeout_ms: GEMINI_TIMEOUT_MS },
     health: providerHealthSnapshot(),
     cache: { entries: responseCache.size, ttl_ms: CACHE_TTL_MS },
     rate_limit: { window_ms: RATE_LIMIT_WINDOW_MS, max: RATE_LIMIT_MAX },

@@ -10,7 +10,7 @@ Recommended production routing:
 Gemini -> Codex
 ```
 
-Mock is for local development only. Production should not silently fall back to mock replies.
+Mock is the last-resort fallback after Gemini and Codex fail or time out. Production should prefer real providers, but can use mock to avoid a dead chat surface.
 
 ## Local Development
 
@@ -89,9 +89,9 @@ Set environment variables in the hosting platform. Do not upload `.env.local`.
 
 ```text
 NODE_ENV=production
-PROVIDER_ORDER=gemini,codex
+PROVIDER_ORDER=gemini,codex,mock
 ENABLE_CODEX_PROVIDER=1
-ENABLE_MOCK_FALLBACK=0
+ENABLE_MOCK_FALLBACK=1
 ALLOWED_ORIGINS=https://your-domain.example
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
@@ -104,11 +104,12 @@ GEMINI_MODEL=gemini-2.5-flash
 CODEX_BACKEND=api
 CODEX_API_KEY=...
 CODEX_MODEL=gpt-5.5
-CODEX_TIMEOUT_MS=3333
+CODEX_TIMEOUT_MS=60000
 CODEX_WORKER_URL=
 CODEX_WORKER_TOKEN=
 
 PROVIDER_TIMEOUT_MS=60000
+GEMINI_TIMEOUT_MS=12000
 CACHE_TTL_MS=120000
 PROVIDER_COOLDOWN_MS=60000
 RATE_LIMIT_WINDOW_MS=60000
@@ -125,7 +126,7 @@ BODY_LIMIT_BYTES=65536
 - Set `NODE_ENV=production` on the host.
 - Set `ALLOWED_ORIGINS` to your real domain.
 - Keep `EXPOSE_DEBUG=0` and `ENABLE_PROVIDER_STATUS=0` in production.
-- Use `Gemini -> Codex` in production and keep mock fallback disabled.
+- Use `Gemini -> Codex -> Mock` in production. Gemini gets a short fast-path timeout; Codex can wait up to one minute; mock is last resort only.
 - Use `CODEX_BACKEND=api` or a warm `CODEX_WORKER_URL` for fast production fallback. `CODEX_BACKEND=cli` is useful locally, but every request starts a Codex process and is much slower.
 - Set spend caps and rate limits in provider dashboards.
 - Review `privacy.html`, `terms.html`, and `safety.html` before inviting users.

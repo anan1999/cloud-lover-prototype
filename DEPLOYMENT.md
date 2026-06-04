@@ -39,9 +39,9 @@ Set these in Render Dashboard, not in git:
 
 ```text
 NODE_ENV=production
-PROVIDER_ORDER=gemini,codex
+PROVIDER_ORDER=gemini,codex,mock
 ENABLE_CODEX_PROVIDER=1
-ENABLE_MOCK_FALLBACK=0
+ENABLE_MOCK_FALLBACK=1
 ALLOWED_ORIGINS=https://cloud-lover-prototype.onrender.com
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
@@ -54,11 +54,12 @@ GEMINI_MODEL=gemini-2.5-flash
 CODEX_BACKEND=api
 CODEX_API_KEY=your_openai_api_key
 CODEX_MODEL=gpt-5.5
-CODEX_TIMEOUT_MS=3333
+CODEX_TIMEOUT_MS=60000
 CODEX_WORKER_URL=
 CODEX_WORKER_TOKEN=
 
 PROVIDER_TIMEOUT_MS=60000
+GEMINI_TIMEOUT_MS=12000
 CACHE_TTL_MS=120000
 PROVIDER_COOLDOWN_MS=60000
 RATE_LIMIT_WINDOW_MS=60000
@@ -70,7 +71,7 @@ Important: rotate any provider keys that were pasted into chat before using prod
 
 Production fallback should use `CODEX_BACKEND=api` or `CODEX_BACKEND=worker`. Render cannot use the Codex login from your local desktop app, so `CODEX_BACKEND=api` needs `CODEX_API_KEY` or `OPENAI_API_KEY`.
 
-`CODEX_TIMEOUT_MS=3333` is the "5 seconds accelerated by 1.5x" cap. It keeps the chat responsive, but it does not make `codex exec` cold start faster. If you set `CODEX_BACKEND=cli`, every request starts a Codex process; that is useful locally but not ideal for formal launch.
+`GEMINI_TIMEOUT_MS=12000` keeps the first provider fast. If Gemini does not answer quickly, the request moves to Codex. `CODEX_TIMEOUT_MS=60000` gives Codex up to one minute before mock is used as the final fallback.
 
 Optional local CLI fallback:
 
@@ -128,9 +129,9 @@ ALLOWED_ORIGINS=https://app.yourdomain.com
 - [ ] `ENABLE_PROVIDER_STATUS=0`
 - [ ] `DATABASE_URL` points to Neon or another long-lived Postgres database
 - [ ] `ADMIN_EMAILS` includes only trusted dashboard users
-- [ ] `PROVIDER_ORDER=gemini,codex`
+- [ ] `PROVIDER_ORDER=gemini,codex,mock`
 - [ ] `ENABLE_CODEX_PROVIDER=1`
-- [ ] `ENABLE_MOCK_FALLBACK=0`
+- [ ] `ENABLE_MOCK_FALLBACK=1`
 - [ ] Provider dashboards have budget/spend limits
 - [ ] App tested with normal and safety-risk messages
 - [ ] Custom domain DNS verified

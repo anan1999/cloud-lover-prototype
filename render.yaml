@@ -9,11 +9,11 @@ services:
       - key: NODE_ENV
         value: production
       - key: PROVIDER_ORDER
-        value: gemini,codex
+        value: gemini,codex,mock
       - key: ENABLE_CODEX_PROVIDER
         value: "1"
       - key: ENABLE_MOCK_FALLBACK
-        value: "0"
+        value: "1"
       - key: EXPOSE_DEBUG
         value: "0"
       - key: ENABLE_PROVIDER_STATUS
@@ -30,8 +30,10 @@ services:
         value: gemini-2.5-flash
       - key: PROVIDER_TIMEOUT_MS
         value: "60000"
+      - key: GEMINI_TIMEOUT_MS
+        value: "12000"
       - key: CODEX_TIMEOUT_MS
-        value: "3333"
+        value: "60000"
       - key: CODEX_MODEL
         value: gpt-5.5
       - key: CODEX_BACKEND
