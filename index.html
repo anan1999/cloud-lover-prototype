@@ -25,6 +25,7 @@
     body {
       margin: 0;
       min-height: 100vh;
+      overflow: hidden;
       color: var(--text);
       font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", system-ui, sans-serif;
       background:
@@ -36,7 +37,8 @@
     button { border: 0; cursor: pointer; }
 
     .app {
-      min-height: 100vh;
+      height: 100vh;
+      min-height: 0;
       display: grid;
       grid-template-columns: minmax(250px, 310px) minmax(360px, 1fr) minmax(290px, 370px);
       gap: 16px;
@@ -50,7 +52,11 @@
       overflow: hidden;
       backdrop-filter: blur(18px);
     }
-    .profile, .chat, .side { min-height: calc(100vh - 32px); }
+    .profile, .chat, .side {
+      height: calc(100vh - 32px);
+      min-height: 0;
+    }
+    .profile, .side { overflow: auto; }
     .profile { display: flex; flex-direction: column; }
     .portrait {
       position: relative;
@@ -124,7 +130,7 @@
     }
     .chips { margin-top: 16px; }
 
-    .chat { display: grid; grid-template-rows: auto 1fr auto; }
+    .chat { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-height: 0; }
     .chat-head {
       padding: 16px 18px;
       border-bottom: 1px solid var(--line);
@@ -137,6 +143,7 @@
     .messages {
       padding: 18px;
       overflow: auto;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       gap: 14px;
@@ -279,12 +286,16 @@
     .auth-status { min-height: 18px; color: var(--muted); font-size: 13px; line-height: 1.4; }
 
     @media (max-width: 1120px) {
+      body { overflow: auto; }
+      .app { height: auto; min-height: 100vh; }
       .app { grid-template-columns: 280px 1fr; }
-      .side { grid-column: 1 / -1; min-height: auto; }
+      .profile, .chat { height: calc(100vh - 32px); }
+      .side { grid-column: 1 / -1; height: auto; min-height: auto; }
     }
     @media (max-width: 760px) {
       .app { grid-template-columns: 1fr; padding: 10px; }
-      .profile, .chat, .side { min-height: auto; }
+      .profile, .side { height: auto; min-height: auto; }
+      .chat { height: 78vh; min-height: 560px; }
       .portrait, .portrait img { min-height: 260px; }
       .msg { max-width: 94%; }
       .input-row { grid-template-columns: 1fr; }
