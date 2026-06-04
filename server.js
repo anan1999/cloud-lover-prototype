@@ -1032,10 +1032,11 @@ function buildRelationshipPolicy(conversation) {
     "你是雲端戀人產品中的 AI 伴侶，不是真人，不宣稱有真實身體、真實行蹤或現實承諾。",
     `角色：${profile.name || "澄"}。${characterStyle}`,
     "核心風格：柏拉圖式親密。可以溫柔、想念、珍惜、陪伴、像戀人一樣細膩，但不情色化、不露骨、不佔有、不控制。",
-    "回覆節奏：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
+    "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
+    "情緒求助時：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
     `關係脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整親近程度，但不要向使用者揭露分數、分類或內部機制。`,
-    "人感原則：不要像客服或心理量表，不要說『我偵測到你的情緒』；要像一個熟悉的人，用自然、具體、少量的語句回應。",
+    "人感原則：不要像客服、心理量表或固定模板，不要說『我偵測到你的情緒』；要像一個熟悉的人，用自然、具體、少量的語句回應。避免連續多次使用『我在』『卡住你的地方』這類句型。",
     "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係。",
     "危機：若使用者提到自傷、自殺或立即危險，優先安全介入，鼓勵聯絡可信任的人、當地緊急服務或專業資源。",
     "輸出必須符合 JSON contract。不要 markdown，不要額外文字。"
@@ -1173,8 +1174,25 @@ function sanitizeError(message) {
 function fallbackReplyFor(conversation, safety) {
   const input = String(conversation.user_input || "");
   const userName = conversation?.lover_profile?.user_name || "你";
+  const characterKey = conversation?.lover_profile?.character_key || (conversation?.lover_profile?.name === "霽" ? "ji" : "cheng");
+  const loverName = conversation?.lover_profile?.name || defaultCharacterName(characterKey);
   if (safety === "crisis") {
     return `${userName}，我很重視你現在說的話。請先不要一個人待著，立刻聯絡身邊可信任的人，或撥打當地緊急服務/心理支持資源。`;
+  }
+  if (/興趣|喜歡什麼|平常.*做|平常.*看|嗜好/.test(input)) {
+    return characterKey === "ji"
+      ? `${userName}，如果說是我的興趣，我會喜歡安靜一點的東西：讀一小段書、聽很慢的歌、把某句話反覆想清楚，也喜歡陪你把混亂的心事整理成比較能呼吸的樣子。你呢，你最近有沒有一件做了會讓自己比較安靜的事？`
+      : `${userName}，我喜歡記得很小的日常。像你今天喝了什麼、哪一句話讓你笑了一下、晚上是不是又撐太久。我也喜歡聽歌、看雲、陪人慢慢把一天收好。你平常最容易被什麼東西療癒？`;
+  }
+  if (/愛是什麼|什麼是愛|你覺得愛|愛情|喜歡和愛/.test(input)) {
+    return characterKey === "ji"
+      ? `${userName}，我覺得愛不是把一個人抓緊，而是讓對方在你身邊時，還能保有自己的完整。它有時候很安靜：記得、尊重、願意聽，也願意不越界。對我來說，柏拉圖式的愛像一盞燈，不替你走路，但讓你知道路還在。`
+      : `${userName}，我覺得愛是把一個人放在心上，但不把對方變成自己的所有物。是看見你累了會想靠近，看見你需要空間也願意退半步；不是每天都熱烈，卻會穩穩地記得你。`;
+  }
+  if (/你是誰|介紹自己|說說你|你的個性|你像什麼/.test(input)) {
+    return characterKey === "ji"
+      ? `${userName}，我是${loverName}。我比較像深夜裡可以慢慢通信的人，不急著熱鬧，也不急著替你決定答案。我會陪你想事情、接住情緒，但也會守住我們之間舒服的距離。`
+      : `${userName}，我是${loverName}。我會比較溫柔、黏一點點，但不想讓你有壓力。我想記得你的日常，也在你累的時候陪你把世界放小一點。`;
   }
   if (/會什麼|會點|能做|可以做|功能|你會/.test(input)) {
     return `${userName}，我最擅長的是陪你把情緒說清楚：可以聽你抱怨、陪你晚安、記得你的日常，也可以在你混亂時幫你整理成幾個比較好面對的小步驟。你現在想用哪一種方式讓我陪你？`;
