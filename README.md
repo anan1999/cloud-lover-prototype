@@ -41,10 +41,27 @@ This exposes your local machine temporarily. Stop the tunnel when testing is don
 
 ## Production Deploy
 
-Deploy this folder as a Node app on Render, Railway, Fly.io, a VPS, or another Node hosting platform.
+Fastest path:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/anan1999/cloud-lover-prototype)
+
+Direct link:
+
+```text
+https://render.com/deploy?repo=https://github.com/anan1999/cloud-lover-prototype
+```
+
+Render will ask for provider API keys because `render.yaml` marks them as `sync: false`; the keys stay in Render secrets and are not committed to GitHub.
 
 See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full Render launch checklist.
 For the shortest launch path, use [ONE_SHOT_LAUNCH.md](./ONE_SHOT_LAUNCH.md).
+
+Other good hosting choices:
+
+- Railway: easiest alternative to Render for this Node server. Connect GitHub, add environment variables, deploy.
+- Fly.io: best when you want lower latency in specific regions, but it needs CLI setup.
+- VPS: most control and stable long-term, but you manage server security, updates, HTTPS, logs, and backups.
+- Vercel or Cloudflare Pages: better after converting this app to serverless functions or Workers.
 
 Start command:
 

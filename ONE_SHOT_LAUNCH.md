@@ -2,6 +2,14 @@
 
 This is the fastest path to a real public URL your friends can use on mobile.
 
+## Click This First
+
+```text
+https://render.com/deploy?repo=https://github.com/anan1999/cloud-lover-prototype
+```
+
+Render will read `render.yaml`, create the web service, and ask you to fill the API keys. After deploy, it gives you a public `https://...onrender.com` URL that friends can open from phones.
+
 ## 1. Rotate Keys First
 
 Keys were pasted during development. Before production, create fresh keys for:
@@ -13,6 +21,14 @@ Keys were pasted during development. Before production, create fresh keys for:
 Use the new keys only in Render environment variables.
 
 ## 2. Deploy on Render
+
+If the direct link above is not open anymore, click:
+
+```text
+https://render.com/deploy?repo=https://github.com/anan1999/cloud-lover-prototype
+```
+
+Then continue with the environment variables below.
 
 1. Go to Render Dashboard.
 2. Create a new Web Service.
@@ -55,6 +71,18 @@ BODY_LIMIT_BYTES=65536
 ```
 
 `ALLOWED_ORIGINS` is optional for the first Render deploy because same-origin requests are allowed automatically. Add it later when you connect a custom domain.
+
+## Other Launch Options
+
+Render is the best first choice for this project because it can run the current Node server without conversion and supports Blueprint secrets.
+
+Railway is the closest alternative. It is also GitHub-based and lets you add environment variables in the dashboard. Use it if Render is slow or the free quota is not enough.
+
+Fly.io is strong for serious production because you can choose regions and run the same Node server, but it is more CLI-heavy.
+
+A VPS is the most professional long-term route after the prototype works. Use Nginx, HTTPS, PM2 or systemd, logs, firewall rules, and a deploy script.
+
+Vercel and Cloudflare Pages are great for frontends, but this app would need a serverless or Workers conversion before they become the cleanest choice.
 
 ## 3. Test Render URL
 

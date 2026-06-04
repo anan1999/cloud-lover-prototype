@@ -15,8 +15,18 @@ services:
         value: "0"
       - key: ALLOWED_ORIGINS
         value: https://cloud-lover-prototype.onrender.com
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
+      - key: OPENROUTER_MODELS
+        value: qwen/qwen3-next-80b-a3b-instruct:free,google/gemma-4-26b-a4b-it:free,google/gemma-4-31b-it:free,moonshotai/kimi-k2.6:free,nvidia/nemotron-3-nano-30b-a3b:free,liquid/lfm-2.5-1.2b-instruct:free
       - key: NVIDIA_MODEL
         value: google/gemma-3n-e2b-it
       - key: PROVIDER_TIMEOUT_MS
