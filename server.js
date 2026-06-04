@@ -23,6 +23,7 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const SESSION_COOKIE = "cloud_lover_session";
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 1000 * 60 * 60 * 24 * 30);
 const PASSWORD_MIN_LENGTH = Number(process.env.PASSWORD_MIN_LENGTH || 8);
+const ADMIN_EMAILS = listFromEnv("ADMIN_EMAILS", []).map(email => email.toLowerCase());
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
@@ -270,7 +271,11 @@ function clearSessionCookie(res) {
 
 function publicUser(user) {
   if (!user) return null;
-  return { id: user.id, email: user.email, display_name: user.display_name, created_at: user.created_at || null };
+  return { id: user.id, email: user.email, display_name: user.display_name, is_admin: isAdminUser(user), created_at: user.created_at || null };
+}
+
+function isAdminUser(user) {
+  return Boolean(user?.email && ADMIN_EMAILS.includes(String(user.email).toLowerCase()));
 }
 
 function validateEmail(email) {
@@ -534,6 +539,102 @@ async function handleAuth(req, res, pathname) {
     return sendJson(req, res, 404, { error: "Not found" });
   } catch (error) {
     return sendJson(req, res, 400, { error: IS_PROD ? "Request failed" : sanitizeError(error.message) });
+  }
+}
+
+function dateKey(value) {
+  return new Date(value || Date.now()).toISOString().slice(0, 10);
+}
+
+async function getAdminStats() {
+  await ensureDb();
+  const result = await queryDb(`
+    select
+      (select count(*)::int from users) as users,
+      (select count(*)::int from messages) as messages,
+      (select count(*)::int from memories) as memories,
+      (select count(*)::int from sessions where expires_at > now()) as active_sessions,
+      (select count(*)::int from messages where role = 'user') as user_messages,
+      (select count(*)::int from messages where role = 'lover') as lover_messages,
+      (select count(*)::int from messages where safety = 'crisis') as crisis_messages,
+      (select count(*)::int from messages where safety = 'dependency_risk') as dependency_risk_messages;
+  `);
+  if (result) {
+    const overview = result.rows[0];
+    const recentUsers = (await queryDb(`
+      select id, email, display_name, created_at
+      from users
+      order by created_at desc
+      limit 20
+    `)).rows;
+    const recentMessages = (await queryDb(`
+      select messages.id, users.email, users.display_name, messages.role, messages.content, messages.safety, messages.emotion, messages.provider, messages.created_at
+      from messages
+      join users on users.id = messages.user_id
+      order by messages.created_at desc
+      limit 80
+    `)).rows;
+    const daily = (await queryDb(`
+      select to_char(created_at::date, 'YYYY-MM-DD') as day, count(*)::int as messages
+      from messages
+      where created_at >= now() - interval '14 days'
+      group by created_at::date
+      order by day
+    `)).rows;
+    const providers = (await queryDb(`
+      select coalesce(provider, 'unknown') as provider, count(*)::int as messages
+      from messages
+      where role = 'lover'
+      group by provider
+      order by messages desc
+    `)).rows;
+    return { overview, daily, providers, recent_users: recentUsers, recent_messages: recentMessages };
+  }
+
+  const db = readLocalDb();
+  const activeSessions = db.sessions.filter(session => new Date(session.expires_at).getTime() > Date.now()).length;
+  const messages = db.messages || [];
+  const usersById = new Map((db.users || []).map(user => [user.id, user]));
+  const dailyMap = new Map();
+  const providerMap = new Map();
+  for (const message of messages) {
+    const day = dateKey(message.created_at);
+    dailyMap.set(day, (dailyMap.get(day) || 0) + 1);
+    if (message.role === "lover") providerMap.set(message.provider || "unknown", (providerMap.get(message.provider || "unknown") || 0) + 1);
+  }
+  return {
+    overview: {
+      users: db.users.length,
+      messages: messages.length,
+      memories: db.memories.length,
+      active_sessions: activeSessions,
+      user_messages: messages.filter(message => message.role === "user").length,
+      lover_messages: messages.filter(message => message.role === "lover").length,
+      crisis_messages: messages.filter(message => message.safety === "crisis").length,
+      dependency_risk_messages: messages.filter(message => message.safety === "dependency_risk").length
+    },
+    daily: [...dailyMap.entries()].sort().slice(-14).map(([day, count]) => ({ day, messages: count })),
+    providers: [...providerMap.entries()].map(([provider, count]) => ({ provider, messages: count })),
+    recent_users: [...db.users].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 20),
+    recent_messages: [...messages].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 80).map(message => {
+      const user = usersById.get(message.user_id) || {};
+      return { ...message, email: user.email, display_name: user.display_name };
+    })
+  };
+}
+
+async function handleAdmin(req, res, pathname) {
+  if (req.method === "OPTIONS") return sendJson(req, res, 200, { ok: true });
+  const user = await getAuthUser(req);
+  if (!user) return sendJson(req, res, 401, { error: "Login required" });
+  if (!isAdminUser(user)) return sendJson(req, res, 403, { error: "Admin access required" });
+  try {
+    if (pathname === "/api/admin/stats" && req.method === "GET") {
+      return sendJson(req, res, 200, { user: publicUser(user), ...(await getAdminStats()) });
+    }
+    return sendJson(req, res, 404, { error: "Not found" });
+  } catch (error) {
+    return sendJson(req, res, 500, { error: IS_PROD ? "Admin query failed" : sanitizeError(error.message) });
   }
 }
 
@@ -1083,6 +1184,7 @@ function serveFile(req, res) {
 
 const server = http.createServer((req, res) => {
   const pathname = new URL(req.url, `http://localhost:${PORT}`).pathname;
+  if (pathname.startsWith("/api/admin/")) return handleAdmin(req, res, pathname);
   if (pathname.startsWith("/api/auth/") || pathname.startsWith("/api/user/")) return handleAuth(req, res, pathname);
   if (req.url.startsWith("/api/cloud-lover/chat")) return handleChat(req, res);
   if (req.url.startsWith("/api/provider/status")) return handleProviderStatus(req, res);

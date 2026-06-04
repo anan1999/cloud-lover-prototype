@@ -55,6 +55,7 @@ PROVIDER_ORDER=gemini,openrouter,nvidia,groq,mock
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
 DATABASE_URL=your_neon_postgres_connection_string
+ADMIN_EMAILS=your_admin_login_email
 
 GEMINI_API_KEY=your_new_key
 GEMINI_MODEL=gemini-2.5-flash

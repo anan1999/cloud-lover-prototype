@@ -44,6 +44,7 @@ ALLOWED_ORIGINS=https://cloud-lover-prototype.onrender.com
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
 DATABASE_URL=postgresql://...
+ADMIN_EMAILS=you@example.com
 
 GEMINI_API_KEY=your_new_gemini_key
 GEMINI_MODEL=gemini-2.5-flash
@@ -112,6 +113,7 @@ ALLOWED_ORIGINS=https://app.yourdomain.com
 - [ ] `EXPOSE_DEBUG=0`
 - [ ] `ENABLE_PROVIDER_STATUS=0`
 - [ ] `DATABASE_URL` points to Neon or another long-lived Postgres database
+- [ ] `ADMIN_EMAILS` includes only trusted dashboard users
 - [ ] `PROVIDER_ORDER` does not include `codex`
 - [ ] Provider dashboards have budget/spend limits
 - [ ] App tested with normal and safety-risk messages
