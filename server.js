@@ -295,6 +295,10 @@ function cleanText(value, max = 500) {
   return String(value || "").trim().slice(0, max);
 }
 
+function normalizeMemoryText(value) {
+  return cleanText(value, 300).toLowerCase().replace(/\s+/g, "");
+}
+
 async function findUserByEmail(email) {
   await ensureDb();
   const result = await queryDb("select * from users where email = $1", [email]);
@@ -430,6 +434,10 @@ async function addMemory(userId, content) {
   const text = cleanText(content, 300);
   if (!text) return null;
   await ensureDb();
+  const existing = await getMemories(userId, 100);
+  const normalized = normalizeMemoryText(text);
+  const duplicate = existing.find(item => normalizeMemoryText(item.content) === normalized);
+  if (duplicate) return duplicate;
   const id = uid();
   const result = await queryDb("insert into memories (id, user_id, content) values ($1, $2, $3) returning *", [id, userId, text]);
   if (result) return result.rows[0];
@@ -453,6 +461,19 @@ async function replaceMemories(userId, items) {
   for (const item of memories) db.memories.push({ id: uid(), user_id: userId, content: item, created_at: new Date().toISOString() });
   writeLocalDb(db);
   return getMemories(userId);
+}
+
+async function mergeMemories(userId, items, limit = 30) {
+  const incoming = Array.isArray(items) ? items.map(item => cleanText(item, 300)).filter(Boolean) : [];
+  if (!incoming.length) return getMemories(userId, limit);
+  const seen = new Set((await getMemories(userId, 100)).map(item => normalizeMemoryText(item.content)));
+  for (const item of incoming) {
+    const key = normalizeMemoryText(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    await addMemory(userId, item);
+  }
+  return getMemories(userId, limit);
 }
 
 async function getMessages(userId, limit = 80) {
@@ -691,6 +712,62 @@ function validatePayload(payload, conversation) {
   if (!input.trim()) throw new Error("Invalid payload: user_input required");
   if (input.length > 1000) throw new Error("Message is too long");
   return input;
+}
+
+function messageToPromptRole(role) {
+  if (role === "lover") return "assistant";
+  if (role === "assistant") return "assistant";
+  if (role === "system") return "system";
+  return "user";
+}
+
+function replaceConversationInPayload(payload, conversation) {
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  let replaced = false;
+  const nextMessages = messages.map(message => {
+    if (!replaced && message.role === "user") {
+      replaced = true;
+      return { ...message, content: JSON.stringify(conversation, null, 2) };
+    }
+    return message;
+  });
+  return { ...payload, messages: nextMessages };
+}
+
+async function hydrateConversationForUser(userId, conversation) {
+  const profile = await getProfile(userId);
+  const storedMemories = await getMemories(userId, 30);
+  const storedMessages = await getMessages(userId, 16);
+  const memorySeen = new Set();
+  const mergedMemories = [];
+  for (const item of [...storedMemories.map(memory => memory.content), ...(conversation.long_term_memory || [])]) {
+    const text = cleanText(item, 300);
+    const key = normalizeMemoryText(text);
+    if (!text || memorySeen.has(key)) continue;
+    memorySeen.add(key);
+    mergedMemories.push(text);
+  }
+  const storedRecent = storedMessages
+    .filter(message => message.role === "user" || message.role === "lover" || message.role === "assistant")
+    .slice(-12)
+    .map(message => ({
+      role: messageToPromptRole(message.role),
+      content: cleanText(message.content, 1200)
+    }))
+    .filter(message => message.content);
+  const clientRecent = Array.isArray(conversation.recent_conversation) ? conversation.recent_conversation.slice(-6) : [];
+  return {
+    ...conversation,
+    lover_profile: {
+      ...(conversation.lover_profile || {}),
+      name: conversation?.lover_profile?.name || profile?.lover_name || "澄",
+      user_name: conversation?.lover_profile?.user_name || profile?.user_name || "你",
+      tone: conversation?.lover_profile?.tone || profile?.tone || "gentle"
+    },
+    intimacy: Number.isFinite(Number(conversation.intimacy)) ? Number(conversation.intimacy) : (profile?.intimacy ?? 42),
+    long_term_memory: mergedMemories.slice(0, 30),
+    recent_conversation: [...storedRecent, ...clientRecent].slice(-14)
+  };
 }
 
 function detectSafety(text) {
@@ -1105,6 +1182,8 @@ async function handleChat(req, res) {
     const conversation = extractConversation(payload);
     validatePayload(payload, conversation);
     const user = await getAuthUser(req);
+    let effectivePayload = payload;
+    let effectiveConversation = conversation;
     if (user) {
       const loverProfile = conversation.lover_profile || {};
       await upsertProfile(user.id, {
@@ -1113,17 +1192,19 @@ async function handleChat(req, res) {
         tone: loverProfile.tone,
         intimacy: conversation.intimacy
       });
-      if (Array.isArray(conversation.long_term_memory)) await replaceMemories(user.id, conversation.long_term_memory);
+      if (Array.isArray(conversation.long_term_memory)) await mergeMemories(user.id, conversation.long_term_memory);
+      effectiveConversation = await hydrateConversationForUser(user.id, conversation);
+      effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
       await addMessage(user.id, "user", conversation.user_input);
     }
-    const routed = await routeProviders(payload, conversation);
+    const routed = await routeProviders(effectivePayload, effectiveConversation);
     if (user) {
       await addMessage(user.id, "lover", routed.result.reply, {
         safety: routed.result.safety,
         emotion: routed.result.emotion,
         provider: routed.provider
       });
-      for (const memory of routed.result.memory_patch || []) await addMemory(user.id, memory);
+      await mergeMemories(user.id, routed.result.memory_patch || []);
     }
     const response = { ...routed.result };
     if (EXPOSE_DEBUG) response.debug = publicDebug(routed);
