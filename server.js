@@ -101,16 +101,23 @@ function getOrigin(req) {
   return req.headers.origin || "";
 }
 
-function isAllowedOrigin(origin) {
+function isAllowedOrigin(req, origin) {
   if (!origin) return true;
   if (!IS_PROD && origin === "null") return true;
   if (!IS_PROD && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) return true;
+  try {
+    const originUrl = new URL(origin);
+    const host = String(req.headers.host || "").toLowerCase();
+    if (host && originUrl.host.toLowerCase() === host) return true;
+  } catch {
+    return false;
+  }
   return ALLOWED_ORIGINS.includes(origin);
 }
 
 function corsHeaders(req) {
   const origin = getOrigin(req);
-  if (!isAllowedOrigin(origin)) return {};
+  if (!isAllowedOrigin(req, origin)) return {};
   return {
     "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Headers": "Content-Type",
@@ -589,7 +596,7 @@ function publicDebug(routed) {
 async function handleChat(req, res) {
   if (req.method === "OPTIONS") return sendJson(req, res, 200, { ok: true });
   if (req.method !== "POST") return sendJson(req, res, 405, { error: "Method not allowed" });
-  if (!isAllowedOrigin(getOrigin(req))) return sendJson(req, res, 403, { error: "Origin not allowed" });
+  if (!isAllowedOrigin(req, getOrigin(req))) return sendJson(req, res, 403, { error: "Origin not allowed" });
   const rate = checkRateLimit(req);
   if (!rate.ok) return sendJson(req, res, 429, { error: "Too many requests", reset_at: rate.resetAt });
   try {

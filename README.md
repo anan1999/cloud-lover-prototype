@@ -44,6 +44,7 @@ This exposes your local machine temporarily. Stop the tunnel when testing is don
 Deploy this folder as a Node app on Render, Railway, Fly.io, a VPS, or another Node hosting platform.
 
 See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full Render launch checklist.
+For the shortest launch path, use [ONE_SHOT_LAUNCH.md](./ONE_SHOT_LAUNCH.md).
 
 Start command:
 
