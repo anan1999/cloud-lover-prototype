@@ -20,7 +20,7 @@
 Gemini -> Codex
 ```
 
-7. Wait up to 60 seconds for provider responses. If both providers fail and mock fallback is disabled, return a temporary provider-unavailable error instead of generating a fake mock reply.
+7. Wait up to the configured provider timeout for Gemini. If Gemini fails, give Codex fallback only 5 seconds so the chat does not hang on CLI cold start. If both providers fail and mock fallback is disabled, return a temporary provider-unavailable error instead of generating a fake mock reply.
 8. Normalize model output into the product contract.
 9. Store user message, AI reply, safety label, emotion, provider, memory patches, and relationship continuity.
 

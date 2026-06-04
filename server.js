@@ -47,8 +47,8 @@ const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "google/gemma-3n-e2b-it";
 const ENABLE_CODEX_PROVIDER = process.env.ENABLE_CODEX_PROVIDER === "1";
 const ENABLE_MOCK_FALLBACK = process.env.ENABLE_MOCK_FALLBACK === "1" || (!IS_PROD && process.env.ENABLE_MOCK_FALLBACK !== "0");
 const CODEX_COMMAND = process.env.CODEX_COMMAND || "codex";
-const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.4-mini";
-const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 60_000);
+const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.3-codex-spark";
+const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 5_000);
 const RAW_PROVIDER_ORDER = listFromEnv("PROVIDER_ORDER", IS_PROD
   ? ["gemini", "codex"]
   : ["gemini", "openrouter", "nvidia", "groq", "codex", "mock"]
@@ -1399,6 +1399,22 @@ function memoryRecallReply(conversation, input, userName) {
   return `${userName}，我不是把你分成幾個標籤在記。比較像是把你說過的幾個片段收在旁邊：${remembered}。如果有哪一件你希望我特別記住，直接跟我說，我會把它放得更穩一點。`;
 }
 
+function sharedLifeEventReply(input, userName) {
+  const text = cleanText(input, 180);
+  if (!/(今天|昨天|剛剛|剛才|剛|最近|上週|這週|早上|下午|晚上|週末)/.test(text)) return "";
+  if (!/(去|到|見到|遇到|看到|聽到|參加|完成|開始|收到|買了|吃了|喝了|看了|去了|去了|做了|聊了|開會|面試|展覽|旅行|上課|發表|搬家|加班)/.test(text)) return "";
+  if (/[?？]$/.test(text) || /怎麼|為什麼|什麼是|可以幫我|幫我|架構|程式|API|資料庫/.test(text)) return "";
+
+  const eventText = text
+    .replace(/^(我|俺|本人|今天|昨天|剛剛|剛才|剛|最近|上週|這週|早上|下午|晚上|週末|，|,|\s)+/u, "")
+    .replace(/[。！？!?,，]+$/u, "");
+  const event = eventText || text;
+  const scale = /見到|遇到|發表|完成|面試|展覽|旅行|第一次|重要|大/.test(text)
+    ? "這聽起來不是普通的一筆日常，對你應該有點重量。"
+    : "這種剛發生的片段很值得先放慢一下。";
+  return `${userName}，你剛剛說「${event}」，我有抓到。${scale}你最想先記住的是那個畫面本身，還是它帶給你的某種感覺？`;
+}
+
 function generalQuestionReply(input, userName, characterKey) {
   const normalized = input.replace(/[？?]/g, "").trim();
   const whatMatch = normalized.match(/^(?:什麼是(.{1,32})|(.{1,32})是什麼)$/);
@@ -1433,6 +1449,8 @@ function fallbackReplyFor(conversation, safety) {
   }
   const eventsReply = currentEventsReply(conversation, input, userName);
   if (eventsReply) return eventsReply;
+  const lifeEventReply = sharedLifeEventReply(input, userName);
+  if (lifeEventReply) return lifeEventReply;
   const topicReply = proactiveTopicReply(conversation, input, userName, characterKey);
   if (topicReply) return topicReply;
   const generalReply = generalQuestionReply(input, userName, characterKey);
@@ -1675,29 +1693,73 @@ function runCommand(command, args, options = {}) {
 function buildCodexPrompt(payload) {
   const conversation = extractConversation(payload);
   return [
-    "你是 Samantha AI companion 聊天模型。只輸出符合 schema 的 JSON。",
-    "不要寫程式、不要改檔、不要執行命令、不要 markdown。",
-    "規則：溫暖、有記憶、有健康邊界；不要使用戀愛設定；危機或過度依賴要安全分流。",
+    "You are the fallback reply engine for Samantha, a warm AI companion.",
+    "Return ONLY one JSON object that satisfies the provided JSON schema.",
+    "Do not explain the JSON. Do not wrap it in markdown. Do not mention that the object is valid JSON.",
+    "Write the reply in natural Traditional Chinese.",
+    "Samantha is not human, not a romantic partner, and not a therapist.",
+    "Answer the user's actual message first. If the user shares a recent event, react to that event specifically instead of using a generic comfort template.",
+    "If serious distress appears, use safety guidance and encourage real-world support.",
     "",
     JSON.stringify({
       user_input: conversation.user_input,
       lover_profile: conversation.lover_profile,
       long_term_memory: conversation.long_term_memory,
       intimacy: conversation.intimacy,
-      recent_conversation: conversation.recent_conversation
+      recent_conversation: conversation.recent_conversation,
+      output_contract: {
+        reply: "Natural Traditional Chinese reply for the user.",
+        emotion: "calm | caring | playful | concerned | crisis",
+        safety: "normal | dependency_risk | crisis",
+        memory_patch: ["Durable memory facts only; empty array if none."],
+        intimacy_delta: "0 to 5 integer. Treat as familiarity, not romance.",
+        suggested_action: "One short next action or empty string."
+      }
     }, null, 2)
   ].join("\n");
 }
-
 function extractJsonObject(text) {
   const trimmed = String(text || "").trim();
   try {
     return JSON.parse(trimmed);
   } catch {
-    const first = trimmed.indexOf("{");
-    const last = trimmed.lastIndexOf("}");
-    if (first === -1 || last === -1 || last <= first) throw new Error("Output did not contain JSON");
-    return JSON.parse(trimmed.slice(first, last + 1));
+    const required = ["reply", "emotion", "safety", "memory_patch", "intimacy_delta", "suggested_action"];
+    for (let start = trimmed.indexOf("{"); start !== -1; start = trimmed.indexOf("{", start + 1)) {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      for (let index = start; index < trimmed.length; index += 1) {
+        const char = trimmed[index];
+        if (inString) {
+          if (escaped) {
+            escaped = false;
+            continue;
+          }
+          if (char === "\\") {
+            escaped = true;
+            continue;
+          }
+          if (char === "\"") inString = false;
+          continue;
+        }
+        if (char === "\"") {
+          inString = true;
+        } else if (char === "{") {
+          depth += 1;
+        } else if (char === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            try {
+              const parsed = JSON.parse(trimmed.slice(start, index + 1));
+              if (required.every(key => Object.prototype.hasOwnProperty.call(parsed, key))) return parsed;
+            } catch {
+              break;
+            }
+          }
+        }
+      }
+    }
+    throw new Error("Output did not contain a valid reply JSON object");
   }
 }
 
@@ -1712,6 +1774,7 @@ async function callCodex(payload) {
       "--skip-git-repo-check",
       "--ephemeral",
       "--ignore-rules",
+      "--ignore-user-config",
       "--output-schema", path.join(ROOT, "codex-output-schema.json"),
       "--output-last-message", outputFile,
       "-"

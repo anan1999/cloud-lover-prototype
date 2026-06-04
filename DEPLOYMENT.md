@@ -51,8 +51,9 @@ ADMIN_EMAILS=you@example.com
 GEMINI_API_KEY=your_new_gemini_key
 GEMINI_MODEL=gemini-2.5-flash
 
-CODEX_MODEL=gpt-5.4-mini
-CODEX_TIMEOUT_MS=60000
+CODEX_MODEL=gpt-5.3-codex-spark
+CODEX_TIMEOUT_MS=5000
+CODEX_COMMAND=codex
 
 PROVIDER_TIMEOUT_MS=60000
 CACHE_TTL_MS=120000
@@ -63,6 +64,10 @@ BODY_LIMIT_BYTES=65536
 ```
 
 Important: rotate any provider keys that were pasted into chat before using production.
+
+Codex fallback requires the host to have a working `codex` CLI. On Windows local development, the WindowsApps `codex.exe` shim can return `Access is denied`; use the real executable path in `CODEX_COMMAND` if needed.
+
+`CODEX_TIMEOUT_MS=5000` caps how long the chat waits for CLI fallback. It does not make `codex exec` cold start in 5 seconds. For reliable sub-5-second replies, use a warm worker process or a direct model API path instead of spawning `codex exec` per request.
 
 For accounts and chat history, use a long-lived external Postgres database for `DATABASE_URL`. Recommended free-first path is Neon Free Postgres. Supabase Free Postgres is also usable, but idle free projects can pause. Avoid Render Free Postgres for important production data because it is short-lived/trial-oriented.
 

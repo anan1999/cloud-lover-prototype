@@ -637,6 +637,7 @@
         await delay(450);
         return mockLLM(userText);
       }
+      const startedAt = performance.now();
       const response = await fetch(state.endpoint, {
         method: "POST",
         credentials: "include",
@@ -645,8 +646,11 @@
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
+        const elapsedMs = performance.now() - startedAt;
         const message = response.status === 503
-          ? "模型暫時忙線，Gemini 和 Codex 都沒有在一分鐘內完成。請稍後再試。"
+          ? (elapsedMs >= 4500
+              ? "模型暫時忙線，Codex fallback 已等候 5 秒仍未完成。請稍後再試。"
+              : "模型很快失敗，通常是 Gemini key、Codex CLI 或後端環境變數尚未設定好。請確認 Render 的 Codex 設定。")
           : (data.error || `API 回應失敗：${response.status}`);
         throw new Error(message);
       }
