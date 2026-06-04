@@ -101,8 +101,12 @@ ADMIN_EMAILS=you@example.com
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-2.5-flash
 
-CODEX_MODEL=gpt-5.3-codex-spark
-CODEX_TIMEOUT_MS=5000
+CODEX_BACKEND=api
+CODEX_API_KEY=...
+CODEX_MODEL=gpt-5.5
+CODEX_TIMEOUT_MS=3333
+CODEX_WORKER_URL=
+CODEX_WORKER_TOKEN=
 
 PROVIDER_TIMEOUT_MS=60000
 CACHE_TTL_MS=120000
@@ -122,6 +126,7 @@ BODY_LIMIT_BYTES=65536
 - Set `ALLOWED_ORIGINS` to your real domain.
 - Keep `EXPOSE_DEBUG=0` and `ENABLE_PROVIDER_STATUS=0` in production.
 - Use `Gemini -> Codex` in production and keep mock fallback disabled.
+- Use `CODEX_BACKEND=api` or a warm `CODEX_WORKER_URL` for fast production fallback. `CODEX_BACKEND=cli` is useful locally, but every request starts a Codex process and is much slower.
 - Set spend caps and rate limits in provider dashboards.
 - Review `privacy.html`, `terms.html`, and `safety.html` before inviting users.
 

@@ -648,9 +648,9 @@
         const data = await response.json().catch(() => ({}));
         const elapsedMs = performance.now() - startedAt;
         const message = response.status === 503
-          ? (elapsedMs >= 4500
-              ? "模型暫時忙線，Codex fallback 已等候 5 秒仍未完成。請稍後再試。"
-              : "模型很快失敗，通常是 Gemini key、Codex CLI 或後端環境變數尚未設定好。請確認 Render 的 Codex 設定。")
+          ? (elapsedMs >= 3000
+              ? "模型暫時忙線，Codex fallback 已等候約 3.3 秒仍未完成。請稍後再試。"
+              : "模型很快失敗，通常是 Gemini key、Codex API/worker 或後端環境變數尚未設定好。請確認 Render 的 Codex 設定。")
           : (data.error || `API 回應失敗：${response.status}`);
         throw new Error(message);
       }

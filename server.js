@@ -47,8 +47,12 @@ const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "google/gemma-3n-e2b-it";
 const ENABLE_CODEX_PROVIDER = process.env.ENABLE_CODEX_PROVIDER === "1";
 const ENABLE_MOCK_FALLBACK = process.env.ENABLE_MOCK_FALLBACK === "1" || (!IS_PROD && process.env.ENABLE_MOCK_FALLBACK !== "0");
 const CODEX_COMMAND = process.env.CODEX_COMMAND || "codex";
-const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.3-codex-spark";
-const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 5_000);
+const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.5";
+const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 3333);
+const CODEX_BACKEND = process.env.CODEX_BACKEND || "api";
+const CODEX_API_KEY = process.env.CODEX_API_KEY || OPENAI_API_KEY;
+const CODEX_WORKER_URL = process.env.CODEX_WORKER_URL || "";
+const CODEX_WORKER_TOKEN = process.env.CODEX_WORKER_TOKEN || "";
 const RAW_PROVIDER_ORDER = listFromEnv("PROVIDER_ORDER", IS_PROD
   ? ["gemini", "codex"]
   : ["gemini", "openrouter", "nvidia", "groq", "codex", "mock"]
@@ -1613,6 +1617,48 @@ async function callOpenAI(payload) {
   return JSON.parse(text);
 }
 
+async function callCodexApi(payload) {
+  if (!CODEX_API_KEY) throw new Error("CODEX_API_KEY or OPENAI_API_KEY not set");
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    signal: AbortSignal.timeout(CODEX_TIMEOUT_MS),
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${CODEX_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: CODEX_MODEL,
+      input: payload.messages.map(message => ({ role: message.role, content: message.content })),
+      temperature: typeof payload.temperature === "number" ? payload.temperature : 0.7,
+      max_output_tokens: 520,
+      text: {
+        format: { type: "json_schema", name: "samantha_codex_reply", strict: true, schema: responseSchema() }
+      }
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data?.error?.message || `Codex API failed with ${response.status}`);
+  const text = data.output_text || data.output?.flatMap(item => item.content || []).find(content => content.type === "output_text")?.text;
+  if (!text) throw new Error("Codex API response did not include output text");
+  return extractJsonObject(text);
+}
+
+async function callCodexWorker(payload) {
+  if (!CODEX_WORKER_URL) throw new Error("CODEX_WORKER_URL not set");
+  const response = await fetch(CODEX_WORKER_URL, {
+    method: "POST",
+    signal: AbortSignal.timeout(CODEX_TIMEOUT_MS),
+    headers: {
+      "Content-Type": "application/json",
+      ...(CODEX_WORKER_TOKEN ? { "Authorization": `Bearer ${CODEX_WORKER_TOKEN}` } : {})
+    },
+    body: JSON.stringify({ payload, prompt: buildCodexPrompt(payload), schema: responseSchema() })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data?.error || `Codex worker failed with ${response.status}`);
+  return extractJsonObject(JSON.stringify(data.reply ? data : data.result || data));
+}
+
 function asChatMessages(payload) {
   return payload.messages.map(message => ({
     role: message.role === "developer" ? "system" : message.role,
@@ -1763,8 +1809,7 @@ function extractJsonObject(text) {
   }
 }
 
-async function callCodex(payload) {
-  if (!ENABLE_CODEX_PROVIDER) throw new Error("Codex provider disabled");
+async function callCodexCli(payload) {
   const outputFile = path.join(ROOT, `.codex-provider-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   try {
     await runCommand(CODEX_COMMAND, [
@@ -1783,6 +1828,25 @@ async function callCodex(payload) {
   } finally {
     fs.rm(outputFile, { force: true }, () => {});
   }
+}
+
+async function callCodex(payload) {
+  if (!ENABLE_CODEX_PROVIDER) throw new Error("Codex provider disabled");
+  const backends = CODEX_BACKEND === "auto" ? ["worker", "api", "cli"] : listFromEnv("CODEX_BACKEND", [CODEX_BACKEND]);
+  const errors = [];
+  for (const backend of backends) {
+    const normalized = backend.trim().toLowerCase();
+    if (!normalized) continue;
+    try {
+      if (normalized === "worker") return await callCodexWorker(payload);
+      if (normalized === "api") return await callCodexApi(payload);
+      if (normalized === "cli") return await callCodexCli(payload);
+      throw new Error(`unknown backend ${normalized}`);
+    } catch (error) {
+      errors.push(`${normalized}: ${sanitizeError(error.message)}`);
+    }
+  }
+  throw new Error(`Codex backends failed: ${errors.join(" | ")}`);
 }
 
 async function callProvider(provider, payload, conversation) {
@@ -1971,6 +2035,13 @@ function handleProviderStatus(req, res) {
       nvidia: NVIDIA_MODEL,
       codex: CODEX_MODEL,
       mock: "mock"
+    },
+    codex: {
+      backend: CODEX_BACKEND,
+      timeout_ms: CODEX_TIMEOUT_MS,
+      api_configured: Boolean(CODEX_API_KEY),
+      worker_configured: Boolean(CODEX_WORKER_URL),
+      cli_command: CODEX_COMMAND
     },
     health: providerHealthSnapshot(),
     cache: { entries: responseCache.size, ttl_ms: CACHE_TTL_MS },

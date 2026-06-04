@@ -31,9 +31,17 @@ services:
       - key: PROVIDER_TIMEOUT_MS
         value: "60000"
       - key: CODEX_TIMEOUT_MS
-        value: "5000"
+        value: "3333"
       - key: CODEX_MODEL
-        value: gpt-5.3-codex-spark
+        value: gpt-5.5
+      - key: CODEX_BACKEND
+        value: api
+      - key: CODEX_API_KEY
+        sync: false
+      - key: CODEX_WORKER_URL
+        sync: false
+      - key: CODEX_WORKER_TOKEN
+        sync: false
       - key: CACHE_TTL_MS
         value: "120000"
       - key: PROVIDER_COOLDOWN_MS

@@ -51,9 +51,12 @@ ADMIN_EMAILS=you@example.com
 GEMINI_API_KEY=your_new_gemini_key
 GEMINI_MODEL=gemini-2.5-flash
 
-CODEX_MODEL=gpt-5.3-codex-spark
-CODEX_TIMEOUT_MS=5000
-CODEX_COMMAND=codex
+CODEX_BACKEND=api
+CODEX_API_KEY=your_openai_api_key
+CODEX_MODEL=gpt-5.5
+CODEX_TIMEOUT_MS=3333
+CODEX_WORKER_URL=
+CODEX_WORKER_TOKEN=
 
 PROVIDER_TIMEOUT_MS=60000
 CACHE_TTL_MS=120000
@@ -65,9 +68,16 @@ BODY_LIMIT_BYTES=65536
 
 Important: rotate any provider keys that were pasted into chat before using production.
 
-Codex fallback requires the host to have a working `codex` CLI. On Windows local development, the WindowsApps `codex.exe` shim can return `Access is denied`; use the real executable path in `CODEX_COMMAND` if needed.
+Production fallback should use `CODEX_BACKEND=api` or `CODEX_BACKEND=worker`. Render cannot use the Codex login from your local desktop app, so `CODEX_BACKEND=api` needs `CODEX_API_KEY` or `OPENAI_API_KEY`.
 
-`CODEX_TIMEOUT_MS=5000` caps how long the chat waits for CLI fallback. It does not make `codex exec` cold start in 5 seconds. For reliable sub-5-second replies, use a warm worker process or a direct model API path instead of spawning `codex exec` per request.
+`CODEX_TIMEOUT_MS=3333` is the "5 seconds accelerated by 1.5x" cap. It keeps the chat responsive, but it does not make `codex exec` cold start faster. If you set `CODEX_BACKEND=cli`, every request starts a Codex process; that is useful locally but not ideal for formal launch.
+
+Optional local CLI fallback:
+
+```text
+CODEX_BACKEND=cli
+CODEX_COMMAND=C:\Users\hi\AppData\Local\OpenAI\Codex\bin\716dda49c14d31a0\codex.exe
+```
 
 For accounts and chat history, use a long-lived external Postgres database for `DATABASE_URL`. Recommended free-first path is Neon Free Postgres. Supabase Free Postgres is also usable, but idle free projects can pause. Avoid Render Free Postgres for important production data because it is short-lived/trial-oriented.
 

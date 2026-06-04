@@ -20,7 +20,11 @@
 Gemini -> Codex
 ```
 
-7. Wait up to the configured provider timeout for Gemini. If Gemini fails, give Codex fallback only 5 seconds so the chat does not hang on CLI cold start. If both providers fail and mock fallback is disabled, return a temporary provider-unavailable error instead of generating a fake mock reply.
+7. Wait up to the configured provider timeout for Gemini. If Gemini fails, use Codex fallback through the configured backend:
+   - `api`: direct OpenAI Responses API, preferred for fast production fallback.
+   - `worker`: an optional always-warm service that can hold its own model connection.
+   - `cli`: local Codex CLI fallback, useful for development but slower because every request starts a process.
+   Codex fallback is capped at about 3.3 seconds by default, which is the 5-second target accelerated by 1.5x. If both providers fail and mock fallback is disabled, return a temporary provider-unavailable error instead of generating a fake mock reply.
 8. Normalize model output into the product contract.
 9. Store user message, AI reply, safety label, emotion, provider, memory patches, and relationship continuity.
 
