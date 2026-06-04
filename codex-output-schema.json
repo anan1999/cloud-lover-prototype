@@ -1,0 +1,32 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "reply": {
+      "type": "string"
+    },
+    "emotion": {
+      "type": "string",
+      "enum": ["calm", "caring", "playful", "concerned", "crisis"]
+    },
+    "safety": {
+      "type": "string",
+      "enum": ["normal", "dependency_risk", "crisis"]
+    },
+    "memory_patch": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "intimacy_delta": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "suggested_action": {
+      "type": "string"
+    }
+  },
+  "required": ["reply", "emotion", "safety", "memory_patch", "intimacy_delta", "suggested_action"]
+}

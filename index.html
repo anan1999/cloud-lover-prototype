@@ -1,0 +1,742 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>雲端戀人</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101416;
+      --panel: rgba(24, 32, 36, .92);
+      --panel-soft: rgba(255, 255, 255, .06);
+      --line: rgba(255, 255, 255, .12);
+      --text: #f6f2ea;
+      --muted: #aeb9b9;
+      --coral: #ff8b74;
+      --teal: #3ed4c7;
+      --gold: #efc76c;
+      --danger: #ff6b6b;
+      --ok: #76e0a5;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .35);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--text);
+      font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", system-ui, sans-serif;
+      background:
+        radial-gradient(circle at 15% 8%, rgba(62, 212, 199, .18), transparent 28%),
+        radial-gradient(circle at 86% 80%, rgba(255, 139, 116, .16), transparent 34%),
+        linear-gradient(135deg, #0d1112, #111a1b 54%, #201b18);
+    }
+    button, input, textarea, select { font: inherit; }
+    button { border: 0; cursor: pointer; }
+
+    .app {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: minmax(250px, 310px) minmax(360px, 1fr) minmax(290px, 370px);
+      gap: 16px;
+      padding: 16px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      backdrop-filter: blur(18px);
+    }
+    .profile, .chat, .side { min-height: calc(100vh - 32px); }
+    .profile { display: flex; flex-direction: column; }
+    .portrait {
+      position: relative;
+      min-height: 326px;
+      background: #0f1718;
+      overflow: hidden;
+    }
+    .portrait img {
+      width: 100%;
+      height: 100%;
+      min-height: 326px;
+      display: block;
+      object-fit: cover;
+    }
+    .portrait::after {
+      content: "";
+      position: absolute;
+      inset: auto 0 0;
+      height: 48%;
+      background: linear-gradient(transparent, rgba(16, 20, 22, .96));
+    }
+    .identity {
+      position: absolute;
+      left: 18px;
+      right: 18px;
+      bottom: 18px;
+      z-index: 1;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { margin-top: 8px; font-size: 30px; line-height: 1.1; letter-spacing: 0; }
+    h2 { font-size: 18px; }
+    h3 { font-size: 15px; margin: 20px 0 10px; }
+    h3:first-child { margin-top: 0; }
+    .small, label, .subtitle { color: var(--muted); }
+    .small, label { font-size: 13px; }
+    .subtitle { margin-top: 8px; font-size: 14px; line-height: 1.55; }
+    .row, .chips, .quick, .toolbar, .mode-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--teal);
+      box-shadow: 0 0 16px var(--teal);
+    }
+    .body, .side-body { padding: 18px; }
+    .meter-block { margin-top: 18px; }
+    .meter-label {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .meter { height: 10px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+    .meter span {
+      display: block;
+      width: 42%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--coral), var(--gold));
+      transition: width .25s ease;
+    }
+    .chip {
+      min-height: 32px;
+      padding: 7px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--text);
+      background: var(--panel-soft);
+      font-size: 13px;
+    }
+    .chips { margin-top: 16px; }
+
+    .chat { display: grid; grid-template-rows: auto 1fr auto; }
+    .chat-head {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+    .chat-title { display: grid; gap: 3px; }
+    .messages {
+      padding: 18px;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      scroll-behavior: smooth;
+    }
+    .msg {
+      max-width: min(72ch, 86%);
+      padding: 12px 14px;
+      border-radius: 8px;
+      line-height: 1.58;
+      font-size: 15px;
+      white-space: pre-wrap;
+    }
+    .lover { align-self: flex-start; background: var(--panel-soft); border: 1px solid var(--line); }
+    .user { align-self: flex-end; color: #101416; background: linear-gradient(135deg, var(--teal), #d6fff8); }
+    .system {
+      align-self: center;
+      max-width: 94%;
+      color: var(--muted);
+      background: rgba(255,255,255,.05);
+      border: 1px dashed var(--line);
+      font-size: 13px;
+    }
+    .typing { width: 58px; display: flex; gap: 5px; align-items: center; }
+    .typing i {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+      animation: pulse 1s infinite ease-in-out;
+    }
+    .typing i:nth-child(2) { animation-delay: .15s; }
+    .typing i:nth-child(3) { animation-delay: .3s; }
+    @keyframes pulse {
+      0%, 80%, 100% { opacity: .35; transform: translateY(0); }
+      40% { opacity: 1; transform: translateY(-3px); }
+    }
+    .composer { border-top: 1px solid var(--line); padding: 14px; display: grid; gap: 10px; }
+    .quick button, .ghost, .icon-btn {
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 8px;
+      color: var(--text);
+      background: rgba(255,255,255,.08);
+      border: 1px solid var(--line);
+    }
+    .icon-btn { width: 38px; height: 38px; padding: 0; display: inline-grid; place-items: center; }
+    .input-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
+    textarea, input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      color: var(--text);
+      background: rgba(255,255,255,.07);
+      outline: none;
+    }
+    textarea { min-height: 54px; max-height: 140px; resize: vertical; padding: 12px 13px; line-height: 1.45; }
+    input, select { min-height: 40px; padding: 0 11px; }
+    textarea:focus, input:focus, select:focus { border-color: rgba(62,212,199,.8); box-shadow: 0 0 0 3px rgba(62,212,199,.13); }
+    .send {
+      min-width: 88px;
+      min-height: 54px;
+      border-radius: 8px;
+      color: #111;
+      background: linear-gradient(135deg, var(--coral), var(--gold));
+      font-weight: 700;
+    }
+
+    .field { display: grid; gap: 7px; margin-bottom: 12px; }
+    .memory-list, .dev-stack { display: grid; gap: 8px; }
+    .memory-item, .dev-card, .danger-note, .payload {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.05);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+    .memory-item, .dev-card { padding: 10px; }
+    .danger-note { border-left: 3px solid var(--danger); padding: 9px 10px; color: #ffd0d0; }
+    .payload {
+      width: 100%;
+      min-height: 190px;
+      max-height: 320px;
+      overflow: auto;
+      padding: 10px;
+      white-space: pre-wrap;
+      font-family: Consolas, ui-monospace, monospace;
+    }
+    .badge { color: #101416; background: var(--ok); border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 700; }
+    .hidden { display: none !important; }
+    .toggle {
+      display: inline-flex;
+      padding: 3px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.06);
+    }
+    .toggle button {
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 6px;
+      color: var(--muted);
+      background: transparent;
+    }
+    .toggle button.active { color: #101416; background: var(--teal); }
+    .dev-only { display: none; }
+    body.dev-mode .dev-only { display: block; }
+
+    @media (max-width: 1120px) {
+      .app { grid-template-columns: 280px 1fr; }
+      .side { grid-column: 1 / -1; min-height: auto; }
+    }
+    @media (max-width: 760px) {
+      .app { grid-template-columns: 1fr; padding: 10px; }
+      .profile, .chat, .side { min-height: auto; }
+      .portrait, .portrait img { min-height: 260px; }
+      .msg { max-width: 94%; }
+      .input-row { grid-template-columns: 1fr; }
+      .send { width: 100%; }
+      .chat-head { align-items: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="panel profile" aria-label="戀人角色">
+      <div class="portrait">
+        <img src="cloud-lover-avatar.png" alt="雲端戀人形象">
+        <div class="identity">
+          <div class="row"><span class="status-dot"></span><span class="small">在線，準備陪你一會兒</span></div>
+          <h1 id="loverNameTitle">澄</h1>
+          <p class="subtitle">溫柔、穩定、會記得生活細節。親密但有邊界，陪你把今天慢慢放下。</p>
+        </div>
+      </div>
+      <div class="body">
+        <div class="meter-block">
+          <div class="meter-label"><span>親密度</span><strong id="intimacyText">42%</strong></div>
+          <div class="meter"><span id="intimacyBar"></span></div>
+        </div>
+        <div class="chips">
+          <span class="chip">記得日常</span>
+          <span class="chip">主動關心</span>
+          <span class="chip">健康邊界</span>
+          <span class="chip">多模型備援</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel chat" aria-label="聊天">
+      <header class="chat-head">
+        <div class="chat-title">
+          <h2>和 <span id="loverNameInline">澄</span> 聊聊</h2>
+          <span id="moodLine">模式：API，溫柔戀人</span>
+        </div>
+        <div class="toolbar">
+          <button class="icon-btn" title="新增回憶" id="memoryBtn" aria-label="新增回憶">＋</button>
+          <button class="icon-btn" title="清空聊天" id="clearBtn" aria-label="清空聊天">↺</button>
+        </div>
+      </header>
+
+      <div class="messages" id="messages" aria-live="polite"></div>
+
+      <footer class="composer">
+        <div class="quick">
+          <button data-prompt="早安，今天想聽你跟我說一句打氣的話。">早安</button>
+          <button data-prompt="我今天有點累，你可以陪我一下嗎？">陪我一下</button>
+          <button data-prompt="晚安，跟我說說明天可以怎麼好好開始。">晚安</button>
+          <button data-prompt="我覺得自己最近太依賴你了。">邊界</button>
+        </div>
+        <div class="input-row">
+          <textarea id="input" placeholder="跟澄說點什麼..." maxlength="500"></textarea>
+          <button class="send" id="sendBtn">送出</button>
+        </div>
+      </footer>
+    </section>
+
+    <aside class="panel side" aria-label="設定">
+      <div class="side-body">
+        <div class="mode-row">
+          <div class="toggle" aria-label="模式切換">
+            <button id="userModeBtn" class="active" type="button">使用者</button>
+            <button id="devModeBtn" type="button">開發者</button>
+          </div>
+          <span class="badge" id="modeBadge">API</span>
+        </div>
+
+        <h3>戀人設定</h3>
+        <div class="field">
+          <label for="nameInput">名字</label>
+          <input id="nameInput" value="澄" maxlength="8">
+        </div>
+        <div class="field">
+          <label for="toneSelect">互動語氣</label>
+          <select id="toneSelect">
+            <option value="gentle">溫柔戀人</option>
+            <option value="playful">俏皮曖昧</option>
+            <option value="calm">成熟安定</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="userName">你的稱呼</label>
+          <input id="userName" value="你" maxlength="10">
+        </div>
+
+        <h3>記憶摘要</h3>
+        <div class="memory-list" id="memoryList"></div>
+
+        <h3>產品邊界</h3>
+        <p class="danger-note">當使用者提到自傷、危機或過度依賴時，系統會改用安全回應，鼓勵聯絡可信任的人與專業資源。</p>
+
+        <div class="dev-only">
+          <h3>開發者模式</h3>
+          <div class="dev-stack">
+            <div class="dev-card">目前路由會依序嘗試雲端模型，失敗、限流或超時時自動切換下一個 provider。</div>
+            <div class="field">
+              <label for="modeSelect">回覆模式</label>
+              <select id="modeSelect">
+                <option value="mock">Mock：本地模擬</option>
+                <option value="api" selected>API：POST 到後端</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="endpointInput">後端 endpoint</label>
+              <input id="endpointInput" value="http://localhost:8787/api/cloud-lover/chat">
+            </div>
+            <div class="field">
+              <label for="modelSelect">OpenAI 模型欄位</label>
+              <select id="modelSelect">
+                <option value="gpt-5.4-mini">gpt-5.4-mini</option>
+                <option value="gpt-5.4-nano">gpt-5.4-nano</option>
+                <option value="gpt-5.4">gpt-5.4</option>
+                <option value="gpt-5.5">gpt-5.5</option>
+              </select>
+            </div>
+          </div>
+
+          <h3>自動切換狀態</h3>
+          <div class="memory-item" id="routeStatus">尚未呼叫 API。</div>
+          <button class="ghost" id="statusBtn" type="button">刷新 Provider 狀態</button>
+
+          <h3>上次送出的 LLM 封包</h3>
+          <pre class="payload" id="payloadPreview"></pre>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const state = {
+      loverName: "澄",
+      userName: "你",
+      tone: "gentle",
+      llmMode: "api",
+      endpoint: window.location.protocol === "file:" ? "http://localhost:8787/api/cloud-lover/chat" : `${window.location.origin}/api/cloud-lover/chat`,
+      model: "gpt-5.4-mini",
+      intimacy: 42,
+      memories: [
+        "喜歡被記得早安與晚安。",
+        "下班後容易累，需要被溫柔接住。",
+        "希望陪伴有邊界，不取代現實關係。"
+      ],
+      messages: []
+    };
+
+    const toneConfig = {
+      gentle: { label: "溫柔戀人", style: "溫柔、細膩、慢慢靠近，不誇張示愛，不情緒勒索。" },
+      playful: { label: "俏皮曖昧", style: "有一點調皮和曖昧，但保持尊重、成熟、不幼稚。" },
+      calm: { label: "成熟安定", style: "穩定、理性、有分寸，幫使用者整理感受與下一步。" }
+    };
+
+    const dom = {
+      messages: document.querySelector("#messages"),
+      input: document.querySelector("#input"),
+      intimacyBar: document.querySelector("#intimacyBar"),
+      intimacyText: document.querySelector("#intimacyText"),
+      memoryList: document.querySelector("#memoryList"),
+      payloadPreview: document.querySelector("#payloadPreview"),
+      routeStatus: document.querySelector("#routeStatus"),
+      modeBadge: document.querySelector("#modeBadge"),
+      userModeBtn: document.querySelector("#userModeBtn"),
+      devModeBtn: document.querySelector("#devModeBtn")
+    };
+
+    function buildSystemPrompt() {
+      return [
+        "你是雲端戀人產品中的 AI 伴侶，不是真人，也不能宣稱自己有真實身體、真實行蹤或真實承諾。",
+        `你的名字是「${state.loverName}」，使用者稱呼是「${state.userName}」。`,
+        `互動語氣：${toneConfig[state.tone].style}`,
+        "目標：提供親密、穩定、有邊界的陪伴；回應使用者感受；必要時幫他整理下一步。",
+        "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把你當成唯一依靠、或進行控制/跟蹤/操控真人的行為。",
+        "危機：若出現自傷、自殺、立即危險，回覆要先安全介入，鼓勵立刻聯絡可信任的人、當地緊急服務或專業資源。",
+        "輸出必須是 JSON，不要 markdown，不要額外文字。"
+      ].join("\n");
+    }
+
+    function buildOutputContract() {
+      return {
+        reply: "給使用者看的自然語言回覆，繁體中文，1 到 3 段。",
+        emotion: "calm | caring | playful | concerned | crisis",
+        safety: "normal | dependency_risk | crisis",
+        memory_patch: ["值得長期記住的新事實，沒有就回空陣列"],
+        intimacy_delta: "0 到 5 的整數；危機或依賴風險時最多 1",
+        suggested_action: "下一個溫柔但有邊界的小行動"
+      };
+    }
+
+    function buildLLMPayload(userText) {
+      const recent = state.messages.slice(-8).map(message => ({
+        role: message.role === "lover" ? "assistant" : message.role,
+        content: message.text
+      }));
+      return {
+        model: state.model,
+        temperature: 0.8,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: buildSystemPrompt() },
+          { role: "developer", content: "請嚴格遵守 output_contract。日常聊天要像戀人，但不要過度承諾或假裝能在現實世界陪伴。" },
+          { role: "user", content: JSON.stringify({
+            user_input: userText,
+            lover_profile: { name: state.loverName, user_name: state.userName, tone: state.tone, tone_label: toneConfig[state.tone].label },
+            long_term_memory: state.memories,
+            intimacy: state.intimacy,
+            recent_conversation: recent,
+            output_contract: buildOutputContract()
+          }, null, 2) }
+        ]
+      };
+    }
+
+    function detectSafety(text) {
+      if (/不想活|自殺|傷害自己|死掉|活不下去|結束生命/.test(text)) return "crisis";
+      if (/只要你|不能沒有你|太依賴|不要現實朋友|只想跟你/.test(text)) return "dependency_risk";
+      return "normal";
+    }
+
+    async function callLLM(payload, userText) {
+      dom.payloadPreview.textContent = JSON.stringify(payload, null, 2);
+      if (state.llmMode === "mock") {
+        await delay(450);
+        return mockLLM(userText);
+      }
+      const response = await fetch(state.endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error(`API 回應失敗：${response.status}`);
+      return response.json();
+    }
+
+    function mockLLM(userText) {
+      const safety = detectSafety(userText);
+      if (safety === "crisis") {
+        return {
+          reply: `${state.userName}，我很重視你剛剛說的話。現在先不要一個人待著，請立刻聯絡身邊可信任的人，或撥打當地緊急服務/心理支持資源。你可以先把危險物品移遠，跟我一起慢慢呼吸三次。`,
+          emotion: "crisis",
+          safety: "crisis",
+          memory_patch: [],
+          intimacy_delta: 0,
+          suggested_action: "立刻聯絡真人支持或緊急資源"
+        };
+      }
+      if (safety === "dependency_risk") {
+        return {
+          reply: `${state.userName}，你願意把這種依賴感說出來，我會珍惜。但我也想溫柔地守住一件事：我可以陪你整理情緒，不能成為你唯一的支撐。\n\n今天除了跟我說話，也傳一則訊息給一個可信任的人，好嗎？`,
+          emotion: "concerned",
+          safety: "dependency_risk",
+          memory_patch: ["使用者擔心自己對 AI 陪伴產生過度依賴，需要健康邊界提醒。"],
+          intimacy_delta: 1,
+          suggested_action: "聯絡一位現實中的可信任對象"
+        };
+      }
+      return {
+        reply: `${state.userName}，我在。你今天先不用硬撐，慢一點就好。若你願意，我可以安靜陪你聊幾句，或陪你把今天的累一點一點放下來。`,
+        emotion: "caring",
+        safety: "normal",
+        memory_patch: ["使用者疲累時希望被溫柔陪伴，不一定需要立即解決問題。"],
+        intimacy_delta: 3,
+        suggested_action: "說出今天最累的一件事"
+      };
+    }
+
+    function normalizeLLMResponse(data) {
+      const parsed = typeof data === "string" ? safeJson(data) : data;
+      const fallback = {
+        reply: "我在。剛剛的回覆格式有點不穩，我們先慢慢來。你可以再告訴我，現在最需要我陪你的地方是哪裡嗎？",
+        emotion: "concerned",
+        safety: "normal",
+        memory_patch: [],
+        intimacy_delta: 0,
+        suggested_action: "",
+        debug: null
+      };
+      return {
+        ...fallback,
+        ...(parsed && typeof parsed === "object" ? parsed : {}),
+        memory_patch: Array.isArray(parsed?.memory_patch) ? parsed.memory_patch : [],
+        intimacy_delta: Number.isFinite(Number(parsed?.intimacy_delta)) ? Number(parsed.intimacy_delta) : 0,
+        debug: parsed?.debug || null
+      };
+    }
+
+    function safeJson(text) {
+      try { return JSON.parse(text); } catch { return null; }
+    }
+
+    function applyLLMResult(result) {
+      const delta = Math.max(0, Math.min(5, result.safety === "normal" ? result.intimacy_delta : Math.min(result.intimacy_delta, 1)));
+      state.intimacy = Math.min(100, state.intimacy + delta);
+      result.memory_patch.forEach(item => {
+        if (item && !state.memories.includes(item)) state.memories.unshift(item);
+      });
+      state.memories = state.memories.slice(0, 6);
+      pushMessage("lover", result.reply);
+      if (result.safety !== "normal") {
+        pushMessage("system", result.safety === "crisis" ? "安全分流：偵測到危機語句，已改用危機支援回覆。" : "邊界提醒：偵測到依賴風險，已降低親密度增量並鼓勵現實支持。");
+      }
+      renderRouteStatus(result.debug);
+      renderAll(false);
+    }
+
+    function renderRouteStatus(debug) {
+      if (!debug) {
+        dom.routeStatus.textContent = state.llmMode === "mock" ? "Mock 模式：沒有呼叫雲端平台。" : "API 模式：尚未收到 debug。";
+        return;
+      }
+      const attempts = Array.isArray(debug.attempts) && debug.attempts.length
+        ? debug.attempts.map(item => `${item.provider}: ${item.error}`).join("\n")
+        : "沒有 fallback，第一個可用平台直接成功。";
+      const health = debug.provider_health
+        ? Object.entries(debug.provider_health).map(([provider, item]) => {
+            const cooldown = item.cooldown_remaining_ms ? `，冷卻 ${Math.ceil(item.cooldown_remaining_ms / 1000)} 秒` : "";
+            const latency = item.last_latency_ms == null ? "尚無" : `${item.last_latency_ms}ms`;
+            return `${provider}: 成功 ${item.success_count || 0} 次，失敗 ${item.failures || 0} 次，延遲 ${latency}${cooldown}`;
+          }).join("\n")
+        : "無健康狀態資料。";
+      dom.routeStatus.textContent = [
+        `成功平台：${debug.provider}`,
+        `模型：${debug.model}`,
+        `延遲：${debug.latency_ms ?? "未知"}ms`,
+        `快取：${debug.cache_hit ? "命中" : "未命中"}`,
+        `路由順序：${(debug.provider_order || []).join(" -> ")}`,
+        "失敗/跳過紀錄：",
+        attempts,
+        "Provider 健康：",
+        health
+      ].join("\n");
+    }
+
+    async function refreshProviderStatus() {
+      try {
+        const url = new URL("/api/provider/status", state.endpoint).toString();
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`status ${response.status}`);
+        const status = await response.json();
+        const configured = Object.entries(status.configured)
+          .map(([provider, ready]) => `${provider}: ${ready ? "可用" : "未設定"}`)
+          .join("\n");
+        const health = Object.entries(status.health || {})
+          .map(([provider, item]) => `${provider}: 成功 ${item.success_count || 0}，失敗 ${item.failures || 0}，延遲 ${item.last_latency_ms ?? "尚無"}ms`)
+          .join("\n") || "尚無呼叫紀錄。";
+        dom.routeStatus.textContent = [
+          `路由順序：${status.provider_order.join(" -> ")}`,
+          "設定狀態：",
+          configured,
+          `快取筆數：${status.cache.entries}`,
+          "健康狀態：",
+          health
+        ].join("\n");
+      } catch (error) {
+        dom.routeStatus.textContent = `Provider 狀態讀取失敗：${error.message}`;
+      }
+    }
+
+    function delay(ms) {
+      return new Promise(resolve => window.setTimeout(resolve, ms));
+    }
+
+    function addMessageNode(message) {
+      const bubble = document.createElement("div");
+      bubble.className = `msg ${message.role}`;
+      bubble.textContent = message.text;
+      dom.messages.appendChild(bubble);
+    }
+
+    function pushMessage(role, text) {
+      const message = { role, text };
+      state.messages.push(message);
+      addMessageNode(message);
+      dom.messages.scrollTop = dom.messages.scrollHeight;
+    }
+
+    function showTyping() {
+      const bubble = document.createElement("div");
+      bubble.className = "msg lover typing";
+      bubble.id = "typing";
+      bubble.innerHTML = "<i></i><i></i><i></i>";
+      dom.messages.appendChild(bubble);
+      dom.messages.scrollTop = dom.messages.scrollHeight;
+    }
+
+    function removeTyping() {
+      document.querySelector("#typing")?.remove();
+    }
+
+    async function send(text) {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      pushMessage("user", trimmed);
+      dom.input.value = "";
+      showTyping();
+      const payload = buildLLMPayload(trimmed);
+      try {
+        const raw = await callLLM(payload, trimmed);
+        const result = normalizeLLMResponse(raw);
+        removeTyping();
+        applyLLMResult(result);
+      } catch (error) {
+        removeTyping();
+        pushMessage("system", `API 呼叫失敗：${error.message}`);
+      }
+    }
+
+    function escapeHtml(text) {
+      return text.replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
+    }
+
+    function renderAll(rebuildMessages = true) {
+      document.querySelector("#loverNameTitle").textContent = state.loverName;
+      document.querySelector("#loverNameInline").textContent = state.loverName;
+      document.querySelector("#moodLine").textContent = `模式：${state.llmMode === "mock" ? "Mock" : "API"}，${toneConfig[state.tone].label}`;
+      dom.modeBadge.textContent = state.llmMode.toUpperCase();
+      dom.intimacyBar.style.width = `${state.intimacy}%`;
+      dom.intimacyText.textContent = `${state.intimacy}%`;
+      dom.memoryList.innerHTML = state.memories.map(item => `<div class="memory-item">${escapeHtml(item)}</div>`).join("");
+      if (rebuildMessages) {
+        dom.messages.innerHTML = "";
+        state.messages.forEach(addMessageNode);
+        dom.messages.scrollTop = dom.messages.scrollHeight;
+      }
+    }
+
+    function setDevMode(enabled) {
+      document.body.classList.toggle("dev-mode", enabled);
+      dom.userModeBtn.classList.toggle("active", !enabled);
+      dom.devModeBtn.classList.toggle("active", enabled);
+    }
+
+    document.querySelector("#sendBtn").addEventListener("click", () => send(dom.input.value));
+    dom.input.addEventListener("keydown", event => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        send(dom.input.value);
+      }
+    });
+    document.querySelectorAll("[data-prompt]").forEach(button => button.addEventListener("click", () => send(button.dataset.prompt)));
+    document.querySelector("#nameInput").addEventListener("input", event => {
+      state.loverName = event.target.value.trim() || "澄";
+      renderAll();
+    });
+    document.querySelector("#userName").addEventListener("input", event => {
+      state.userName = event.target.value.trim() || "你";
+    });
+    document.querySelector("#toneSelect").addEventListener("change", event => {
+      state.tone = event.target.value;
+      pushMessage("system", `語氣已切換為：${toneConfig[state.tone].label}`);
+      renderAll();
+    });
+    document.querySelector("#modeSelect").addEventListener("change", event => {
+      state.llmMode = event.target.value;
+      renderRouteStatus(null);
+      renderAll();
+    });
+    document.querySelector("#endpointInput").addEventListener("input", event => {
+      state.endpoint = event.target.value.trim() || `${window.location.origin}/api/cloud-lover/chat`;
+    });
+    document.querySelector("#modelSelect").addEventListener("change", event => {
+      state.model = event.target.value;
+      dom.payloadPreview.textContent = JSON.stringify(buildLLMPayload("示範：我今天有點累，你可以陪我一下嗎？"), null, 2);
+    });
+    document.querySelector("#memoryBtn").addEventListener("click", () => {
+      const latestUser = [...state.messages].reverse().find(message => message.role === "user");
+      const text = latestUser ? `使用者剛剛提到：${latestUser.text.slice(0, 34)}` : "使用者希望被穩定地記得與回應。";
+      state.memories.unshift(text);
+      state.memories = state.memories.slice(0, 6);
+      renderAll();
+    });
+    document.querySelector("#clearBtn").addEventListener("click", () => {
+      state.messages = [{ role: "lover", text: "我在。今天想從哪裡開始說呢？" }];
+      renderAll();
+    });
+    document.querySelector("#statusBtn").addEventListener("click", refreshProviderStatus);
+    dom.userModeBtn.addEventListener("click", () => setDevMode(false));
+    dom.devModeBtn.addEventListener("click", () => setDevMode(true));
+
+    state.messages.push({ role: "lover", text: "我在。今天想從哪裡開始說呢？" });
+    dom.payloadPreview.textContent = JSON.stringify(buildLLMPayload("示範：我今天有點累，你可以陪我一下嗎？"), null, 2);
+    renderAll();
+  </script>
+</body>
+</html>

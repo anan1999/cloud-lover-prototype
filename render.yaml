@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: cloud-lover-prototype
+    runtime: node
+    buildCommand: ""
+    startCommand: "npm start"
+    envVars:
+      - key: PROVIDER_ORDER
+        value: gemini,nvidia,openrouter,groq,mock
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: NVIDIA_MODEL
+        value: google/gemma-3n-e2b-it
+      - key: PROVIDER_TIMEOUT_MS
+        value: "12000"
+      - key: CACHE_TTL_MS
+        value: "120000"
+      - key: PROVIDER_COOLDOWN_MS
+        value: "60000"
