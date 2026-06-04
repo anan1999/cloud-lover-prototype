@@ -643,7 +643,13 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
-      if (!response.ok) throw new Error(`API 回應失敗：${response.status}`);
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const message = response.status === 503
+          ? "模型暫時忙線，Gemini 和 Codex 都沒有在一分鐘內完成。請稍後再試。"
+          : (data.error || `API 回應失敗：${response.status}`);
+        throw new Error(message);
+      }
       return response.json();
     }
 

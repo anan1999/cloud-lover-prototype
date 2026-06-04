@@ -44,14 +44,20 @@ const OPENROUTER_MODELS = listFromEnv("OPENROUTER_MODELS", [
 ]);
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "google/gemma-3n-e2b-it";
-const ENABLE_CODEX_PROVIDER = process.env.ENABLE_CODEX_PROVIDER === "1" && !IS_PROD;
+const ENABLE_CODEX_PROVIDER = process.env.ENABLE_CODEX_PROVIDER === "1";
+const ENABLE_MOCK_FALLBACK = process.env.ENABLE_MOCK_FALLBACK === "1" || (!IS_PROD && process.env.ENABLE_MOCK_FALLBACK !== "0");
 const CODEX_COMMAND = process.env.CODEX_COMMAND || "codex";
 const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.4-mini";
-const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 45_000);
-const PROVIDER_ORDER = listFromEnv("PROVIDER_ORDER", IS_PROD
-  ? ["gemini", "openrouter", "nvidia", "groq", "mock"]
+const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 60_000);
+const RAW_PROVIDER_ORDER = listFromEnv("PROVIDER_ORDER", IS_PROD
+  ? ["gemini", "codex"]
   : ["gemini", "openrouter", "nvidia", "groq", "codex", "mock"]
 );
+const PROVIDER_ORDER = RAW_PROVIDER_ORDER.filter(provider => {
+  if (provider === "mock") return ENABLE_MOCK_FALLBACK;
+  if (provider === "codex") return ENABLE_CODEX_PROVIDER;
+  return true;
+});
 const ALLOWED_ORIGINS = listFromEnv("ALLOWED_ORIGINS", []);
 const NEWS_RSS_URLS = listFromEnv("NEWS_RSS_URLS", [
   "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
@@ -1224,11 +1230,12 @@ function markProviderSuccess(provider, latencyMs) {
 function markProviderFailure(provider, error) {
   const health = getProviderHealth(provider);
   const failures = health.failures + 1;
+  const shouldCooldown = provider !== "mock" && failures >= 2;
   providerHealth.set(provider, {
     ...health,
     failures,
     last_error: sanitizeError(error.message),
-    cooldown_until: provider === "mock" ? 0 : now() + Math.min(PROVIDER_COOLDOWN_MS * failures, 5 * PROVIDER_COOLDOWN_MS)
+    cooldown_until: shouldCooldown ? now() + Math.min(PROVIDER_COOLDOWN_MS * failures, 5 * PROVIDER_COOLDOWN_MS) : 0
   });
 }
 
@@ -1780,7 +1787,13 @@ async function routeProviders(payload, conversation) {
       attempts.push({ provider, error: sanitizeError(error.message) });
     }
   }
-  return { result: mockModel(conversation), provider: "mock", model: "mock", latency_ms: 0, attempts, cache_hit: false };
+  if (ENABLE_MOCK_FALLBACK) {
+    return { result: mockModel(conversation), provider: "mock", model: "mock", latency_ms: 0, attempts, cache_hit: false };
+  }
+  const error = new Error("All LLM providers failed");
+  error.statusCode = 503;
+  error.attempts = attempts;
+  throw error;
 }
 
 function publicDebug(routed) {
@@ -1868,7 +1881,9 @@ async function handleChat(req, res) {
     if (EXPOSE_DEBUG) response.debug = publicDebug(routed);
     return sendJson(req, res, 200, response);
   } catch (error) {
-    return sendJson(req, res, 400, { error: IS_PROD ? "Bad request" : sanitizeError(error.message) });
+    const status = error.statusCode || 400;
+    const message = status === 503 ? "AI providers are temporarily unavailable" : (IS_PROD ? "Bad request" : sanitizeError(error.message));
+    return sendJson(req, res, status, { error: message });
   }
 }
 
@@ -1883,7 +1898,7 @@ function handleProviderStatus(req, res) {
       openrouter: Boolean(OPENROUTER_API_KEY),
       nvidia: Boolean(NVIDIA_API_KEY),
       codex: ENABLE_CODEX_PROVIDER,
-      mock: true
+      mock: ENABLE_MOCK_FALLBACK
     },
     models: {
       openai: OPENAI_MODEL,

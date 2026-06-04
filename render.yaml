@@ -9,7 +9,11 @@ services:
       - key: NODE_ENV
         value: production
       - key: PROVIDER_ORDER
-        value: gemini,openrouter,nvidia,groq,mock
+        value: gemini,codex
+      - key: ENABLE_CODEX_PROVIDER
+        value: "1"
+      - key: ENABLE_MOCK_FALLBACK
+        value: "0"
       - key: EXPOSE_DEBUG
         value: "0"
       - key: ENABLE_PROVIDER_STATUS
@@ -22,20 +26,12 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
-      - key: OPENROUTER_API_KEY
-        sync: false
-      - key: NVIDIA_API_KEY
-        sync: false
-      - key: GROQ_API_KEY
-        sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
-      - key: OPENROUTER_MODELS
-        value: qwen/qwen3-next-80b-a3b-instruct:free,google/gemma-4-26b-a4b-it:free,google/gemma-4-31b-it:free,moonshotai/kimi-k2.6:free,nvidia/nemotron-3-nano-30b-a3b:free,liquid/lfm-2.5-1.2b-instruct:free
-      - key: NVIDIA_MODEL
-        value: google/gemma-3n-e2b-it
       - key: PROVIDER_TIMEOUT_MS
-        value: "12000"
+        value: "60000"
+      - key: CODEX_TIMEOUT_MS
+        value: "60000"
       - key: CACHE_TTL_MS
         value: "120000"
       - key: PROVIDER_COOLDOWN_MS
