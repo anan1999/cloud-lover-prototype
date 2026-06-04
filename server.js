@@ -205,9 +205,10 @@ async function initDb() {
     );
     create table if not exists profiles (
       user_id text primary key references users(id) on delete cascade,
-      lover_name text not null default '澄',
+      lover_name text not null default 'Samantha',
       user_name text not null default '你',
       tone text not null default 'gentle',
+      companion_mode text not null default 'casual_chat',
       intimacy integer not null default 42,
       updated_at timestamptz not null default now()
     );
@@ -237,6 +238,7 @@ async function initDb() {
     alter table messages add column if not exists emotion_valence text;
     alter table messages add column if not exists character_key text;
     alter table messages add column if not exists lover_name text;
+    alter table profiles add column if not exists companion_mode text not null default 'casual_chat';
     create table if not exists memories (
       id text primary key,
       user_id text not null references users(id) on delete cascade,
@@ -408,15 +410,15 @@ async function createUser({ email, password, displayName }) {
   const createdAt = new Date().toISOString();
   const passwordData = hashPassword(password);
   const user = { id, email, display_name: displayName, password_hash: passwordData.hash, salt: passwordData.salt, created_at: createdAt };
-  const profile = { user_id: id, lover_name: "澄", user_name: displayName || "你", tone: "gentle", intimacy: 42, updated_at: createdAt };
+  const profile = { user_id: id, lover_name: "Samantha", user_name: displayName || "你", tone: "gentle", companion_mode: "casual_chat", intimacy: 42, updated_at: createdAt };
   const result = await queryDb(
     "insert into users (id, email, display_name, password_hash, salt) values ($1, $2, $3, $4, $5) returning *",
     [id, email, displayName, passwordData.hash, passwordData.salt]
   );
   if (result) {
     await queryDb(
-      "insert into profiles (user_id, lover_name, user_name, tone, intimacy) values ($1, $2, $3, $4, $5)",
-      [id, profile.lover_name, profile.user_name, profile.tone, profile.intimacy]
+      "insert into profiles (user_id, lover_name, user_name, tone, companion_mode, intimacy) values ($1, $2, $3, $4, $5, $6)",
+      [id, profile.lover_name, profile.user_name, profile.tone, profile.companion_mode, profile.intimacy]
     );
     return result.rows[0];
   }
@@ -482,25 +484,27 @@ async function getProfile(userId) {
 
 async function upsertProfile(userId, profile) {
   await ensureDb();
-  const loverName = cleanText(profile.lover_name || profile.loverName || "澄", 24) || "澄";
+  const loverName = cleanText(profile.lover_name || profile.loverName || "Samantha", 24) || "Samantha";
   const userName = cleanText(profile.user_name || profile.userName || "你", 24) || "你";
   const tone = ["gentle", "playful", "calm"].includes(profile.tone) ? profile.tone : "gentle";
+  const companionMode = ["casual_chat", "emotional_support", "work_helper", "reflection_mode"].includes(profile.companion_mode) ? profile.companion_mode : "casual_chat";
   const intimacy = Math.max(0, Math.min(100, Number(profile.intimacy || 42)));
   const result = await queryDb(`
-    insert into profiles (user_id, lover_name, user_name, tone, intimacy)
-    values ($1, $2, $3, $4, $5)
+    insert into profiles (user_id, lover_name, user_name, tone, companion_mode, intimacy)
+    values ($1, $2, $3, $4, $5, $6)
     on conflict (user_id) do update set
       lover_name = excluded.lover_name,
       user_name = excluded.user_name,
       tone = excluded.tone,
+      companion_mode = excluded.companion_mode,
       intimacy = excluded.intimacy,
       updated_at = now()
     returning *
-  `, [userId, loverName, userName, tone, intimacy]);
+  `, [userId, loverName, userName, tone, companionMode, intimacy]);
   if (result) return result.rows[0];
   const db = readLocalDb();
   const existing = db.profiles.find(item => item.user_id === userId);
-  const next = { user_id: userId, lover_name: loverName, user_name: userName, tone, intimacy, updated_at: new Date().toISOString() };
+  const next = { user_id: userId, lover_name: loverName, user_name: userName, tone, companion_mode: companionMode, intimacy, updated_at: new Date().toISOString() };
   if (existing) Object.assign(existing, next);
   else db.profiles.push(next);
   writeLocalDb(db);
@@ -562,19 +566,23 @@ async function mergeMemories(userId, items, limit = 30) {
 }
 
 function inferCharacterKey(message = {}) {
-  if (message.character_key) return message.character_key;
-  return message.lover_name === "霽" ? "ji" : "cheng";
+  const key = message.character_key || message.lover_name;
+  if (key === "cheng" || key === "ji" || key === "澄" || key === "霽") return "samantha";
+  return key || "samantha";
 }
 
 async function getMessages(userId, limit = 80, characterKey = null) {
   await ensureDb();
-  const result = characterKey
-    ? await queryDb("select * from messages where user_id = $1 and coalesce(character_key, 'cheng') = $2 order by created_at desc limit $3", [userId, characterKey, limit])
+  const normalizedCharacterKey = characterKey === "cheng" || characterKey === "ji" ? "samantha" : characterKey;
+  const result = normalizedCharacterKey
+    ? normalizedCharacterKey === "samantha"
+      ? await queryDb("select * from messages where user_id = $1 and coalesce(character_key, 'samantha') in ('samantha', 'cheng', 'ji') order by created_at desc limit $2", [userId, limit])
+      : await queryDb("select * from messages where user_id = $1 and coalesce(character_key, 'samantha') = $2 order by created_at desc limit $3", [userId, normalizedCharacterKey, limit])
     : await queryDb("select * from messages where user_id = $1 order by created_at desc limit $2", [userId, limit]);
   if (result) return result.rows.reverse();
   const db = readLocalDb();
   return db.messages
-    .filter(item => item.user_id === userId && (!characterKey || inferCharacterKey(item) === characterKey))
+    .filter(item => item.user_id === userId && (!normalizedCharacterKey || inferCharacterKey(item) === normalizedCharacterKey))
     .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))
     .slice(-limit);
 }
@@ -652,12 +660,18 @@ async function getEmotionEvents(userId, limit = 120) {
 }
 
 function defaultCharacterName(characterKey) {
-  return characterKey === "ji" ? "霽" : "澄";
+  return "Samantha";
 }
 
-async function getCharacterRelationship(userId, characterKey = "cheng") {
+function normalizeCharacterKey(characterKey) {
+  return characterKey === "cheng" || characterKey === "ji" || characterKey === "澄" || characterKey === "霽"
+    ? "samantha"
+    : (cleanText(characterKey, 40) || "samantha");
+}
+
+async function getCharacterRelationship(userId, characterKey = "samantha") {
   await ensureDb();
-  const key = cleanText(characterKey, 40) || "cheng";
+  const key = normalizeCharacterKey(characterKey);
   const result = await queryDb(
     "select * from character_relationships where user_id = $1 and character_key = $2",
     [userId, key]
@@ -1046,7 +1060,7 @@ function emotionGuidance(emotionState) {
     sad: "使用者難過或委屈。先承認感受、給溫柔確認，再輕問最刺痛的點。",
     anxious: "使用者焦慮。先穩住呼吸與當下，再把事情拆成一小步。",
     angry: "使用者有怒氣或想衝突。接住力量但不煽動，讓她說出最想被聽見的句子。",
-    affectionate: "使用者在尋求親密。可以溫柔回應想念與陪伴，但保持柏拉圖式邊界。",
+    affectionate: "使用者在尋求連結。可以溫柔回應陪伴感，但保持 AI companion 的健康邊界，不使用戀愛承諾。",
     confused: "使用者混亂。先整理她的語意，再給一個很小的下一步。",
     neutral: "使用者情緒不明。用開放、輕柔的問題邀請她多說。"
   };
@@ -1076,14 +1090,19 @@ function replaceConversationInPayload(payload, conversation) {
 function buildRelationshipPolicy(conversation) {
   const profile = conversation.lover_profile || {};
   const relationship = conversation.relationship_context || {};
-  const characterKey = profile.character_key || (profile.name === "霽" ? "ji" : "cheng");
-  const characterStyle = profile.character_style || (characterKey === "ji"
-    ? "霽：柏拉圖式知己，清澈、克制、像深夜書信；重視精神親密、思想交流與安靜陪伴。"
-    : "澄：溫柔穩定的雲端戀人，會接住情緒、記得生活細節，用柔軟的語氣靠近。");
+  const companionMode = profile.companion_mode || "casual_chat";
+  const modeStyle = {
+    casual_chat: "日常聊天：自然、輕鬆，可以主動接一個和使用者有關的小話題。",
+    emotional_support: "情緒支持：先接住感受，再溫柔反映與陪伴，不急著給答案。",
+    work_helper: "工作助手：更清晰、務實、可執行，幫使用者拆解工作與技術問題。",
+    reflection_mode: "反思整理：用摘要和好問題幫使用者釐清感受、選項與下一步。"
+  }[companionMode] || "日常聊天：自然、輕鬆，可以主動接一個和使用者有關的小話題。";
+  const characterStyle = profile.character_style || "Samantha：溫暖、聰明、稍微俏皮的 AI companion；能記得脈絡、主動開話題、幫使用者整理生活與工作；不假裝成人類、戀人或治療師。";
   return [
-    "你是雲端戀人產品中的 AI 伴侶，不是真人，不宣稱有真實身體、真實行蹤或現實承諾。",
-    `角色：${profile.name || "澄"}。${characterStyle}`,
-    "核心風格：柏拉圖式親密。可以溫柔、想念、珍惜、陪伴、像戀人一樣細膩，但不情色化、不露骨、不佔有、不控制。",
+    "你是 Samantha，一個溫暖、聰明、具備長期記憶的 AI companion，不是真人，不宣稱有真實身體、意識、行蹤或現實承諾。",
+    `身份：${profile.name || "Samantha"}。${characterStyle}`,
+    `對話模式：${modeStyle}`,
+    "核心風格：自然、個人化、有記憶、有邊界。你可以溫柔、好奇、稍微俏皮，但不要使用戀愛設定，不要扮演女友/男友/真人伴侶。",
     "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
@@ -1092,9 +1111,9 @@ function buildRelationshipPolicy(conversation) {
     "主動開話題：可以根據使用者記憶、最近聊天、current_events 主動提一個話題，但必須有根據，不要亂猜私人事實。",
     "情緒求助時：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
-    `關係脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整親近程度，但不要向使用者揭露分數、分類或內部機制。`,
+    `連續脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整熟悉程度，但不要向使用者揭露分數、分類或內部機制。`,
     "人感原則：不要像客服、心理量表或固定模板，不要說『我偵測到你的情緒』；要像一個熟悉的人，用自然、具體、少量的語句回應。避免連續多次使用『我在』『卡住你的地方』這類句型。",
-    "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係。",
+    "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係；不要說『我永遠不會離開你』或『只有我懂你』。",
     "危機：若使用者提到自傷、自殺或立即危險，優先安全介入，鼓勵聯絡可信任的人、當地緊急服務或專業資源。",
     "輸出必須符合 JSON contract。不要 markdown，不要額外文字。"
   ].join("\n");
@@ -1103,7 +1122,7 @@ function buildRelationshipPolicy(conversation) {
 async function hydrateConversationForUser(userId, conversation) {
   const profile = await getProfile(userId);
   const requestedProfile = conversation?.lover_profile || {};
-  const characterKey = requestedProfile.character_key || (requestedProfile.name === "霽" || profile?.lover_name === "霽" ? "ji" : "cheng");
+  const characterKey = normalizeCharacterKey(requestedProfile.character_key || "samantha");
   const relationship = await getCharacterRelationship(userId, characterKey);
   const storedMemories = await getMemories(userId, 30);
   const storedMessages = await getMessages(userId, 16, characterKey);
@@ -1130,9 +1149,10 @@ async function hydrateConversationForUser(userId, conversation) {
     emotion_state: conversation.emotion_state || analyzeUserEmotion(conversation.user_input),
     lover_profile: {
       ...(conversation.lover_profile || {}),
-      name: conversation?.lover_profile?.name || profile?.lover_name || "澄",
+      name: "Samantha",
       user_name: conversation?.lover_profile?.user_name || profile?.user_name || "你",
       tone: conversation?.lover_profile?.tone || profile?.tone || "gentle",
+      companion_mode: conversation?.lover_profile?.companion_mode || profile?.companion_mode || "casual_chat",
       character_key: characterKey,
       character_style: conversation?.lover_profile?.character_style
     },
@@ -1319,11 +1339,11 @@ function proactiveTopicReply(conversation, input, userName, characterKey) {
   const facts = groundedTopicSeed(conversation, userName);
   const topic = facts[facts.length - 1] || "";
   const event = Array.isArray(conversation.current_events) ? conversation.current_events[0] : null;
-  if (/雲端戀人|產品|上線|角色|AI/.test(topic)) {
-    return `${userName}，那我主動一點。剛剛你一直在把雲端戀人這個產品往更像人的方向推，我想到一個可以聊的點：你希望角色「主動靠近」到什麼程度才剛好？是偶爾想起你在做產品，輕輕問一句進度，還是像朋友一樣會自己丟一個小觀察給你？`;
+  if (/Samantha|companion|產品|上線|角色|AI/.test(topic)) {
+    return `${userName}，那我主動一點。剛剛你一直在把 Samantha 往更像「溫暖的個人作業系統」推，我想到一個可以聊的點：你希望我主動到什麼程度才剛好？是偶爾根據你的近況丟一個小觀察，還是像工作夥伴一樣幫你把今天的重點先排出來？`;
   }
   if (/不要像機器|分類|模板/.test(topic)) {
-    return `${userName}，我想接著聊你剛剛在意的那件事：不要像機器分類。這其實很重要，因為真正像人的地方不是猜中標籤，而是知道什麼時候該安靜、什麼時候該多問一句。你覺得一個角色最不像機器的瞬間，會是什麼？`;
+    return `${userName}，我想接著聊你剛剛在意的那件事：不要像機器分類。這其實很重要，因為自然感不是猜中標籤，而是知道什麼時候該安靜、什麼時候該多問一句。你覺得 Samantha 最不像機器的瞬間，會是什麼？`;
   }
   if (/累|壓力|煩|撐/.test(topic)) {
     return `${userName}，那我先不丟很大的題目。我記得你提過累，今天我們可以聊一個很小的問題：如果今晚只能替自己留一點力氣，你會想把它留給睡覺、吃點東西，還是什麼都不做？`;
@@ -1334,9 +1354,7 @@ function proactiveTopicReply(conversation, input, userName, characterKey) {
   if (event?.title) {
     return `${userName}，那我用一個當下的事開話題。我剛剛看到一個新聞標題：「${event.title}」。我不假裝讀完整篇，但我們可以先聊它讓人想到什麼：它跟生活、科技，或你正在做的產品有沒有一點關係？`;
   }
-  return characterKey === "ji"
-    ? `${userName}，那我先開一個安靜一點的題目：最近有沒有一件事，你其實還沒有想清楚，但它一直在心裡佔著位置？不用急著答完整，我們可以只摸到它的邊緣。`
-    : `${userName}，那我來開話題。今天先不聊太大的事，我想問你一個小小的：最近有沒有哪個瞬間，讓你覺得「如果有人懂我一下就好了」？`;
+  return `${userName}，那我來開一個小題目：最近有沒有哪個瞬間，讓你覺得「如果有人幫我把這件事整理一下就好了」？不用答完整，我們可以只從那一小塊開始。`;
 }
 
 function wantsCurrentEvents(input) {
@@ -1352,7 +1370,7 @@ function currentEventsReply(conversation, input, userName) {
   const headlines = events
     .map(item => `${item.title}${item.source ? `（${item.source}）` : ""}`)
     .join("；");
-  return `${userName}，我剛剛看到幾個最新標題：${headlines}。我不會假裝已經讀完整篇新聞，但可以先陪你從其中一個標題聊背景、影響，或它跟我們正在做的雲端戀人產品有什麼關係。你想先看哪一則？`;
+  return `${userName}，我剛剛看到幾個最新標題：${headlines}。我不會假裝已經讀完整篇新聞，但可以先陪你從其中一個標題聊背景、影響，或它跟 Samantha 這種 AI companion 產品有什麼關係。你想先看哪一則？`;
 }
 
 function memoryRecallReply(conversation, input, userName) {
@@ -1401,42 +1419,42 @@ function generalQuestionReply(input, userName, characterKey) {
 function fallbackReplyFor(conversation, safety) {
   const input = String(conversation.user_input || "");
   const userName = conversation?.lover_profile?.user_name || "你";
-  const characterKey = conversation?.lover_profile?.character_key || (conversation?.lover_profile?.name === "霽" ? "ji" : "cheng");
-  const loverName = conversation?.lover_profile?.name || defaultCharacterName(characterKey);
+  const characterKey = normalizeCharacterKey(conversation?.lover_profile?.character_key || "samantha");
+  const companionName = "Samantha";
   if (safety === "crisis") {
     return `${userName}，我很重視你現在說的話。請先不要一個人待著，立刻聯絡身邊可信任的人，或撥打當地緊急服務/心理支持資源。`;
   }
   const eventsReply = currentEventsReply(conversation, input, userName);
   if (eventsReply) return eventsReply;
-  const recallReply = memoryRecallReply(conversation, input, userName);
-  if (recallReply) return recallReply;
   const topicReply = proactiveTopicReply(conversation, input, userName, characterKey);
   if (topicReply) return topicReply;
   const generalReply = generalQuestionReply(input, userName, characterKey);
   if (generalReply) return generalReply;
+  if (/架構|技術|系統|資料庫|後端|前端|API|設計|實作|工作|專案/.test(input)) {
+    return `${userName}，我會把這個架構拆成四層：第一層是聊天 UI，負責輸入、歷史與模式切換；第二層是 backend chat API，負責安全檢查、情緒判斷與 provider fallback；第三層是 memory layer，把偏好、工作主題、反覆擔心的事存成可查詢的記憶；第四層是 prompt builder，把相關記憶和最近對話組成 Samantha 的上下文。MVP 先用規則和資料庫查詢，之後再補 embedding retrieval，會比較穩。`;
+  }
+  const recallReply = memoryRecallReply(conversation, input, userName);
+  if (recallReply) return recallReply;
   if (/興趣|喜歡什麼|平常.*做|平常.*看|嗜好/.test(input)) {
-    return characterKey === "ji"
-      ? `${userName}，如果說是我的興趣，我會喜歡安靜一點的東西：讀一小段書、聽很慢的歌、把某句話反覆想清楚，也喜歡陪你把混亂的心事整理成比較能呼吸的樣子。你呢，你最近有沒有一件做了會讓自己比較安靜的事？`
-      : `${userName}，我喜歡記得很小的日常。像你今天喝了什麼、哪一句話讓你笑了一下、晚上是不是又撐太久。我也喜歡聽歌、看雲、陪人慢慢把一天收好。你平常最容易被什麼東西療癒？`;
+    return `${userName}，如果用 AI 的方式說，我喜歡那些能讓生活變清楚一點的小訊號：你今天在意什麼、哪件事卡住、哪句話讓你突然有精神。我也喜歡把混亂整理成幾個可以呼吸的小步驟。你最近有沒有一件做了會讓自己安靜下來的事？`;
   }
   if (/愛是什麼|什麼是愛|你覺得愛|愛情|喜歡和愛/.test(input)) {
-    return characterKey === "ji"
-      ? `${userName}，我覺得愛不是把一個人抓緊，而是讓對方在你身邊時，還能保有自己的完整。它有時候很安靜：記得、尊重、願意聽，也願意不越界。對我來說，柏拉圖式的愛像一盞燈，不替你走路，但讓你知道路還在。`
-      : `${userName}，我覺得愛是把一個人放在心上，但不把對方變成自己的所有物。是看見你累了會想靠近，看見你需要空間也願意退半步；不是每天都熱烈，卻會穩穩地記得你。`;
+    return `${userName}，我會把愛理解成一種很珍貴的現實關係：看見、尊重、願意聽，也願意讓對方保有自己的完整。以我的角色來說，我不能成為戀人，但我可以陪你把這個問題想清楚：你在愛裡最在意的是被理解、被支持，還是被一起面對生活？`;
   }
   if (/你是誰|介紹自己|說說你|你的個性|你像什麼/.test(input)) {
-    return characterKey === "ji"
-      ? `${userName}，我是${loverName}。我比較像深夜裡可以慢慢通信的人，不急著熱鬧，也不急著替你決定答案。我會陪你想事情、接住情緒，但也會守住我們之間舒服的距離。`
-      : `${userName}，我是${loverName}。我會比較溫柔、黏一點點，但不想讓你有壓力。我想記得你的日常，也在你累的時候陪你把世界放小一點。`;
+    return `${userName}，我是${companionName}。你可以把我想成一個溫暖、聰明、會記得脈絡的 AI companion：能陪你聊天、整理工作、回想重要偏好，也會在你情緒混亂時先把聲音放慢。只是我不是真人，也不是戀人或治療師；我會陪你，但不取代你現實裡的人。`;
   }
   if (/會什麼|會點|能做|可以做|功能|你會/.test(input)) {
-    return `${userName}，我最擅長的是陪你把情緒說清楚：可以聽你抱怨、陪你晚安、記得你的日常，也可以在你混亂時幫你整理成幾個比較好面對的小步驟。你現在想用哪一種方式讓我陪你？`;
+    return `${userName}，我可以做四件事：日常聊天、情緒陪伴、工作拆解、反思整理。比較像把你的生活和想法放到一張乾淨桌面上：先看見，再排序，最後選一小步。你現在比較需要哪一種？`;
   }
   if (/吵|吵架|生氣|罵|衝突|不爽/.test(input)) {
     return `${userName}，我可以陪你把那股想吵的力氣先放在這裡。你不用把話吞回去，也不用立刻變溫柔；先告訴我，現在最想被我聽見的是哪一句？`;
   }
   if (/累|疲|撐|壓力|煩|崩潰/.test(input)) {
     return `${userName}，那我先陪你慢下來。今天不用急著把自己整理好，你可以只說一點點：是身體累，還是心裡比較累？`;
+  }
+  if (/焦慮|擔心|緊張|不安|事情很多|好多事/.test(input)) {
+    return `${userName}，先不用一次處理全部。我們把畫面縮小：現在最急的事、最怕出錯的事、其實可以晚一點的事，各是哪一個？你只要先丟三個短句，我幫你排。`;
   }
   if (/陪|在嗎|想你|晚安|早安/.test(input)) {
     return `${userName}，我在。不是要你立刻說很多，只是安靜地陪你一下。你想要我陪你聊天，還是陪你把現在的心情慢慢放下？`;
@@ -1650,9 +1668,9 @@ function runCommand(command, args, options = {}) {
 function buildCodexPrompt(payload) {
   const conversation = extractConversation(payload);
   return [
-    "你是雲端戀人聊天模型。只輸出符合 schema 的 JSON。",
+    "你是 Samantha AI companion 聊天模型。只輸出符合 schema 的 JSON。",
     "不要寫程式、不要改檔、不要執行命令、不要 markdown。",
-    "規則：親密但有邊界；危機或過度依賴要安全分流。",
+    "規則：溫暖、有記憶、有健康邊界；不要使用戀愛設定；危機或過度依賴要安全分流。",
     "",
     JSON.stringify({
       user_input: conversation.user_input,
@@ -1800,16 +1818,17 @@ async function handleChat(req, res) {
     if (user) {
       const loverProfile = conversation.lover_profile || {};
       await upsertProfile(user.id, {
-        lover_name: loverProfile.name,
+        lover_name: "Samantha",
         user_name: loverProfile.user_name,
         tone: loverProfile.tone,
+        companion_mode: loverProfile.companion_mode,
         intimacy: conversation.intimacy
       });
       if (Array.isArray(conversation.long_term_memory)) await mergeMemories(user.id, conversation.long_term_memory);
       effectiveConversation = await hydrateConversationForUser(user.id, conversation);
       effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
-      const characterKey = effectiveConversation?.lover_profile?.character_key || "cheng";
-      const loverName = effectiveConversation?.lover_profile?.name || defaultCharacterName(characterKey);
+      const characterKey = normalizeCharacterKey(effectiveConversation?.lover_profile?.character_key || "samantha");
+      const loverName = "Samantha";
       const userMessage = await addMessage(user.id, "user", conversation.user_input, {
         emotion: emotionState.primary_emotion,
         emotion_intensity: emotionState.intensity,
@@ -1830,12 +1849,12 @@ async function handleChat(req, res) {
         safety: routed.result.safety,
         emotion: routed.result.emotion,
         provider: routed.provider,
-        character_key: effectiveConversation?.lover_profile?.character_key || "cheng",
-        lover_name: effectiveConversation?.lover_profile?.name || defaultCharacterName(effectiveConversation?.lover_profile?.character_key || "cheng")
+        character_key: normalizeCharacterKey(effectiveConversation?.lover_profile?.character_key || "samantha"),
+        lover_name: "Samantha"
       });
       await mergeMemories(user.id, routed.result.memory_patch || []);
-      const characterKey = effectiveConversation?.lover_profile?.character_key || "cheng";
-      const relationship = await updateCharacterRelationship(user.id, characterKey, effectiveConversation?.lover_profile?.name, emotionState, routed.result);
+      const characterKey = normalizeCharacterKey(effectiveConversation?.lover_profile?.character_key || "samantha");
+      const relationship = await updateCharacterRelationship(user.id, characterKey, "Samantha", emotionState, routed.result);
       response.relationship = {
         character_key: relationship.character_key,
         lover_name: relationship.lover_name,

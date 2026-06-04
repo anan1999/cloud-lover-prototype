@@ -1,6 +1,8 @@
-# Cloud Lover Prototype
+# Samantha AI Companion MVP
 
-An AI companion prototype with multi-provider fallback and production-oriented safety controls.
+An emotionally aware AI companion MVP inspired by a warm personal operating-system assistant. Samantha supports natural chat, long-term memory, emotion-aware responses, conversation modes, multi-provider fallback, user accounts, a database-backed chat history, and production-oriented safety controls.
+
+Samantha is not a fake human, therapist, girlfriend, boyfriend, or emergency service. The product is designed to feel warm and continuous while keeping healthy boundaries.
 
 Recommended production routing:
 
@@ -55,6 +57,20 @@ Render will ask for provider API keys because `render.yaml` marks them as `sync:
 
 See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full Render launch checklist.
 For the shortest launch path, use [ONE_SHOT_LAUNCH.md](./ONE_SHOT_LAUNCH.md).
+
+## Product Architecture
+
+- Frontend: `index.html` chat UI, account UI, companion settings, conversation mode selector, memory panel, and developer diagnostics.
+- Backend: `server.js` static server, auth, chat API, memory manager, emotion detector, prompt builder, provider router, and admin APIs.
+- Data: Neon Postgres in production, local JSON fallback in development.
+- Docs: see [docs/architecture.md](./docs/architecture.md), [docs/prompt_design.md](./docs/prompt_design.md), and [docs/safety_guidelines.md](./docs/safety_guidelines.md).
+
+Conversation modes:
+
+- `casual_chat`: relaxed daily conversation.
+- `emotional_support`: comfort and reflection.
+- `work_helper`: technical or work-related help.
+- `reflection_mode`: thinking through feelings or decisions.
 
 Other good hosting choices:
 
