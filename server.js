@@ -1171,6 +1171,26 @@ function sanitizeError(message) {
     .slice(0, 300);
 }
 
+function generalQuestionReply(input, userName, characterKey) {
+  const normalized = input.replace(/[？?]/g, "").trim();
+  const whatMatch = normalized.match(/^(?:什麼是(.{1,32})|(.{1,32})是什麼)$/);
+  const subject = whatMatch ? cleanText(whatMatch[1] || whatMatch[2] || "", 40) : "";
+  if (/^AI$|人工智慧|AI/.test(subject) || /AI是什麼|什麼是AI|人工智慧是什麼/.test(normalized)) {
+    return characterKey === "ji"
+      ? `${userName}，AI 可以先理解成一種會從大量資料裡學習規律、再用那些規律回應問題的技術。它不像人一樣真的生活過，但可以幫人整理文字、生成想法、陪你練習表達。像我，就是被設計成用比較安靜的方式陪你說話的 AI。`
+      : `${userName}，AI 就是人工智慧：讓電腦學著理解文字、圖片或聲音，然後做出回答、整理、創作或判斷。它不是真的人，但可以成為一個工具，也可以被設計成像我這樣，溫柔地陪你聊天。`;
+  }
+  if (/水壺|茶壺|保溫瓶/.test(subject) || /什麼是水壺|水壺是什麼/.test(normalized)) {
+    return `${userName}，水壺就是用來裝水、倒水或保溫的容器。很日常，但也有一點生活感：放在桌上時，像是在提醒人記得喝水、慢一點照顧自己。`;
+  }
+  if (subject && !/愛|興趣|你|陪|累|吵|晚安|早安/.test(subject)) {
+    return characterKey === "ji"
+      ? `${userName}，如果簡單說，${subject}是一個可以被拆開理解的概念：先看它用來做什麼、出現在哪裡、和人有什麼關係。你問得很直接，我可以先陪你把它講清楚，再慢慢補例子。`
+      : `${userName}，${subject}可以先用很生活的方式理解：它是一個有用途、有情境的東西或概念。你要是願意，我可以用更簡單、像聊天一樣的方式慢慢說給你聽。`;
+  }
+  return "";
+}
+
 function fallbackReplyFor(conversation, safety) {
   const input = String(conversation.user_input || "");
   const userName = conversation?.lover_profile?.user_name || "你";
@@ -1179,6 +1199,8 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "crisis") {
     return `${userName}，我很重視你現在說的話。請先不要一個人待著，立刻聯絡身邊可信任的人，或撥打當地緊急服務/心理支持資源。`;
   }
+  const generalReply = generalQuestionReply(input, userName, characterKey);
+  if (generalReply) return generalReply;
   if (/興趣|喜歡什麼|平常.*做|平常.*看|嗜好/.test(input)) {
     return characterKey === "ji"
       ? `${userName}，如果說是我的興趣，我會喜歡安靜一點的東西：讀一小段書、聽很慢的歌、把某句話反覆想清楚，也喜歡陪你把混亂的心事整理成比較能呼吸的樣子。你呢，你最近有沒有一件做了會讓自己比較安靜的事？`
