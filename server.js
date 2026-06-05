@@ -1913,7 +1913,8 @@ async function routeProviders(payload, conversation) {
   if (cached) return { ...cached, attempts: [{ provider: "cache", error: "cache hit" }], cache_hit: true };
   const routeStartedAt = now();
   const attempts = [];
-  for (const provider of PROVIDER_ORDER) {
+  const realProviderOrder = PROVIDER_ORDER.filter(provider => provider !== "mock");
+  for (const provider of realProviderOrder) {
     const health = getProviderHealth(provider);
     if (health.cooldown_until > now()) {
       attempts.push({ provider, error: `cooldown ${health.cooldown_until - now()}ms remaining` });
