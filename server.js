@@ -398,18 +398,27 @@ async function getCurrentNews(limit = 5) {
 
 function extractNewsQuery(input) {
   const text = cleanText(input, 120);
-  const explicit = text.match(/(?:最近|最新|有什麼|有哪些)?(.{2,24}?)(?:的)?(?:新聞|消息|近況|動態)/u);
-  if (explicit?.[1]) {
-    const query = explicit[1]
-      .replace(/我剛剛查了?一下/u, "")
-      .replace(/最近|最新|有什麼|有哪些|關於|跟|和|的|他|她|這個人|那個人|新聞|消息|近況|動態/gu, "")
-      .trim();
+  const cleanQuery = value => cleanText(value, 80)
+    .replace(/我剛剛查了?一下/u, "")
+    .replace(/請問|可以|幫我|查一下|搜尋|最近|最新|有什麼|有哪些|關於|跟|和|的|他|她|這個人|那個人|新聞|消息|近況|動態|台灣|中華民國/gu, "")
+    .replace(/[，,。！？!?：:；;\s]+/gu, "")
+    .trim();
+  const personIntro = text.match(/([一-龥A-Za-z][一-龥A-Za-z·.\-\s]{1,30}?)(?:是|就是).{0,30}?(?:總統|執行長|CEO|創辦人|主席|市長|部長|政治人物|歌手|演員|導演|作家|球員|企業家)/u);
+  if (personIntro?.[1]) {
+    const query = cleanQuery(personIntro[1]);
     if (query.length >= 2) return query;
   }
-  const personIntro = text.match(/([一-龥A-Za-z][一-龥A-Za-z·.\-\s]{1,30}?)(?:是|就是).{0,30}?(?:總統|執行長|CEO|創辦人|主席|市長|部長|政治人物|歌手|演員|導演|作家|球員|企業家)/u);
-  if (personIntro?.[1]) return personIntro[1].trim();
   const directPerson = text.match(/([一-龥]{2,4}|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:最近|最新).{0,8}(?:新聞|消息|近況|動態)/u);
-  return directPerson?.[1]?.trim() || "";
+  if (directPerson?.[1]) {
+    const query = cleanQuery(directPerson[1]);
+    if (query.length >= 2) return query;
+  }
+  const explicit = text.match(/(?:最近|最新|有什麼|有哪些)?(.{2,24}?)(?:的)?(?:新聞|消息|近況|動態)/u);
+  if (explicit?.[1]) {
+    const query = cleanQuery(explicit[1]);
+    if (query.length >= 2) return query;
+  }
+  return "";
 }
 
 async function getNewsForQuery(query, limit = 5) {
@@ -1477,9 +1486,10 @@ function currentEventsReply(conversation, input, userName) {
   }
   const query = conversation.news_query || "";
   const headlines = events
+    .slice(0, 3)
     .map(item => `${item.title}${item.source ? `（${item.source}）` : ""}`)
     .join("；");
-  return `${userName}，我剛剛${query ? `用「${query}」` : ""}查到幾個最新標題：${headlines}。我不會假裝已經讀完整篇新聞，但可以先陪你從其中一則聊背景、影響，或它跟你正在關心的事情有什麼關係。你想先看哪一則？`;
+  return `${userName}，我剛剛${query ? `用「${query}」` : ""}查了一下，先看到幾個方向：${headlines}。我不會假裝已經讀完整篇，但大概可以先陪你看「國際互動」「產業影響」或「爭議反應」其中一塊。你比較想先聽哪個？`;
 }
 
 function webFactsReply(conversation, input, userName) {
