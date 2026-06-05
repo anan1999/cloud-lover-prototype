@@ -14,6 +14,7 @@
    - database long-term memory
    - recent database conversation
    - current news headlines when relevant
+   - web facts from a free lookup source when the user asks factual questions such as "who is X?"
 6. Route across providers in order:
 
 ```text

@@ -81,6 +81,7 @@ const mime = {
 const providerHealth = new Map();
 const responseCache = new Map();
 let newsCache = { expiresAt: 0, items: [] };
+const webFactCache = new Map();
 const rateBuckets = new Map();
 const localDbPath = path.join(ROOT, ".local-db.json");
 let pgPool = null;
@@ -392,6 +393,49 @@ async function getCurrentNews(limit = 5) {
   }
   newsCache = { expiresAt: now + NEWS_CACHE_TTL_MS, items: items.slice(0, 12) };
   return newsCache.items.slice(0, limit);
+}
+
+function wantsWebLookup(input) {
+  return /是誰|是什麼人|你知道.*嗎|查一下|搜尋|最新|目前|現在|哪一年|什麼時候|誰是|誰/.test(String(input || ""));
+}
+
+function extractLookupQuery(input) {
+  return cleanText(input, 80)
+    .replace(/^(請|可以|幫我|你可以|麻煩你)?(先)?(查一下|搜尋一下|搜尋|查|告訴我|說說)?/u, "")
+    .replace(/你知道/u, "")
+    .replace(/是誰|是什麼人|是什麼|誰是|嗎|呢|？|\?/gu, "")
+    .trim();
+}
+
+async function getWebFacts(input) {
+  const query = extractLookupQuery(input);
+  if (!query || query.length < 2) return [];
+  const cached = webFactCache.get(query);
+  if (cached && cached.expiresAt > Date.now()) return cached.items;
+  try {
+    const searchUrl = `https://zh.wikipedia.org/w/api.php?action=opensearch&format=json&limit=1&namespace=0&search=${encodeURIComponent(query)}`;
+    const searchResponse = await fetch(searchUrl, { headers: { "User-Agent": "SamanthaCompanionMVP/0.1" }, signal: AbortSignal.timeout(5000) });
+    if (!searchResponse.ok) return [];
+    const searchData = await searchResponse.json();
+    const title = Array.isArray(searchData?.[1]) ? searchData[1][0] : "";
+    if (!title) return [];
+    const summaryUrl = `https://zh.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+    const summaryResponse = await fetch(summaryUrl, { headers: { "User-Agent": "SamanthaCompanionMVP/0.1" }, signal: AbortSignal.timeout(5000) });
+    if (!summaryResponse.ok) return [];
+    const summary = await summaryResponse.json();
+    const item = {
+      query,
+      title: cleanText(summary.title || title, 120),
+      extract: cleanText(summary.extract || "", 600),
+      source: "Wikipedia",
+      url: summary.content_urls?.desktop?.page || `https://zh.wikipedia.org/wiki/${encodeURIComponent(title)}`
+    };
+    const items = item.extract ? [item] : [];
+    webFactCache.set(query, { expiresAt: Date.now() + 60 * 60_000, items });
+    return items;
+  } catch {
+    return [];
+  }
 }
 
 function normalizeMemoryText(value) {
@@ -1118,6 +1162,7 @@ function buildRelationshipPolicy(conversation) {
     "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
+    "查詢事實：如果 conversation.web_facts 有資料，必須優先根據 web_facts 回答；簡短說明來源，不要把人物問題回答成抽象概念。web_facts 沒有資料時才說不確定，不要硬編。",
     "記憶回顧：如果使用者問『你記得什麼』『我剛剛說什麼』『我說過什麼』，要像自然回想一樣提到 long_term_memory 和 recent_conversation 裡的片段；不要用分類標籤或機械清單。沒有就誠實說目前只記得很少，不要編造。",
     "當今時事：只有在 conversation.current_events 有資料時，才能談最新新聞或當今事件；要說你看到的是標題，不要假裝讀完整篇。沒有 current_events 時要誠實說目前查不到。",
     "主動開話題：可以根據使用者記憶、最近聊天、current_events 主動提一個話題，但必須有根據，不要亂猜私人事實。",
@@ -1179,6 +1224,7 @@ async function hydrateConversationForUser(userId, conversation) {
     },
     long_term_memory: mergedMemories.slice(0, 30),
     current_events: Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 5) : [],
+    web_facts: Array.isArray(conversation.web_facts) ? conversation.web_facts.slice(0, 3) : [],
     recent_conversation: [...storedRecent, ...clientRecent].slice(-14)
   };
 }
@@ -1197,7 +1243,8 @@ function cacheKey(conversation) {
     name: conversation?.lover_profile?.name,
     user_name: conversation?.lover_profile?.user_name,
     memory: conversation.long_term_memory,
-    current_events: (conversation.current_events || []).map(item => item.title).slice(0, 5)
+    current_events: (conversation.current_events || []).map(item => item.title).slice(0, 5),
+    web_facts: (conversation.web_facts || []).map(item => `${item.title}:${item.extract}`).slice(0, 3)
   });
 }
 
@@ -1306,6 +1353,9 @@ function closingTexture(characterKey, input) {
 }
 
 function knownConceptReply(subject, userName, characterKey, texture, closing) {
+  if (/賴清德|Lai Ching-te|William Lai/i.test(subject)) {
+    return `${userName}，${texture}賴清德是中華民國第 16 任總統，2024 年 5 月就任。他原本是醫師，後來進入公共事務，曾任臺南市長、行政院長，也曾任副總統；現在是台灣主要政治人物之一。簡單說，如果你看到他的新聞，多半會跟台灣政府、兩岸關係、民主政治、經濟或民生政策有關。${closing}`;
+  }
   if (/黃仁勳|Jensen Huang|NVIDIA|輝達|英偉達/i.test(subject)) {
     return `${userName}，${texture}黃仁勳是 NVIDIA（輝達）的共同創辦人，也是現任執行長。他最被大家熟悉的是把 GPU 從遊戲顯示卡一路推到 AI 運算核心，讓 NVIDIA 在生成式 AI、資料中心和 AI PC 這幾年變成很關鍵的公司。你如果是在 COMPUTEX 看到他的消息，通常會跟 AI 晶片、GPU、機器人或個人電腦的新方向有關。${closing}`;
   }
@@ -1394,6 +1444,17 @@ function currentEventsReply(conversation, input, userName) {
   return `${userName}，我剛剛看到幾個最新標題：${headlines}。我不會假裝已經讀完整篇新聞，但可以先陪你從其中一個標題聊背景、影響，或它跟 Samantha 這種 AI companion 產品有什麼關係。你想先看哪一則？`;
 }
 
+function webFactsReply(conversation, input, userName) {
+  const facts = Array.isArray(conversation.web_facts) ? conversation.web_facts.filter(item => item?.extract) : [];
+  if (!facts.length) return "";
+  const fact = facts[0];
+  const source = fact.source ? `我先查到 ${fact.source} 的摘要：` : "我先查到一段摘要：";
+  if (/是誰|是什麼人|誰/.test(input)) {
+    return `${userName}，${source}${fact.title}，${fact.extract} 你如果想，我可以再幫你把這個人和最近新聞脈絡整理成三句。`;
+  }
+  return `${userName}，我先查到「${fact.title}」：${fact.extract} 這是摘要層級的資訊，不是完整報導；你想要我接著整理背景、時間線，還是它跟你現在關心的事情有什麼關係？`;
+}
+
 function memoryRecallReply(conversation, input, userName) {
   if (!/記得|我說過|我剛剛|剛剛.*聊|剛才.*聊|你知道我|你還記得|都記得/.test(input)) return "";
   const memories = Array.isArray(conversation.long_term_memory)
@@ -1450,6 +1511,9 @@ function generalQuestionReply(input, userName, characterKey) {
   if (subject && !/愛|興趣|你|陪|累|吵|晚安|早安/.test(subject)) {
     const known = knownConceptReply(subject, userName, characterKey, texture, closing);
     if (known) return known;
+    if (whoMatch) {
+      return `${userName}，我不想把人物亂講成概念。${subject}聽起來像是在問一個人是誰；如果我沒有足夠把握，我會先說：我目前不能確定他的完整身分。你可以再給我一點線索，例如國家、領域或新聞脈絡，我就能比較準確地接上。`;
+    }
     return characterKey === "ji"
       ? `${userName}，${texture}${subject}可以先看成一個有邊界的概念：它是什麼、用在哪裡、和其他東西差在哪裡。先抓住這三點，就不會被名詞嚇到。${closing}`
       : `${userName}，${texture}${subject}可以先用很生活的方式理解：它不是只躺在課本裡的詞，而是有用途、有情境、會跟人的生活接上線的東西。${closing}`;
@@ -1467,6 +1531,8 @@ function fallbackReplyFor(conversation, safety) {
   }
   const eventsReply = currentEventsReply(conversation, input, userName);
   if (eventsReply) return eventsReply;
+  const factsReply = webFactsReply(conversation, input, userName);
+  if (factsReply) return factsReply;
   const lifeEventReply = sharedLifeEventReply(input, userName);
   if (lifeEventReply) return lifeEventReply;
   const topicReply = proactiveTopicReply(conversation, input, userName, characterKey);
@@ -1975,6 +2041,9 @@ async function handleChat(req, res) {
     conversation.emotion_state = emotionState;
     if (wantsCurrentEvents(conversation.user_input) || /開話題|找話題|聊什麼|你決定|你主動|不知道聊什麼|換個話題|陪我聊/.test(conversation.user_input)) {
       conversation.current_events = await getCurrentNews(5);
+    }
+    if (wantsWebLookup(conversation.user_input)) {
+      conversation.web_facts = await getWebFacts(conversation.user_input);
     }
     const user = await getAuthUser(req);
     let effectivePayload = payload;
