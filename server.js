@@ -2383,6 +2383,7 @@ async function handleChat(req, res) {
       };
     }
     response.emotion_state = emotionState;
+    response.situation_state = effectiveConversation.situation_state || situationState;
     if (EXPOSE_DEBUG) response.debug = publicDebug(routed);
     return sendJson(req, res, 200, response);
   } catch (error) {
