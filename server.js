@@ -1407,7 +1407,12 @@ async function handleAdmin(req, res, pathname) {
       return sendJson(req, res, 200, { user: publicUser(user), ...(await getAdminStats()) });
     }
     if (pathname === "/api/admin/evaluations" && req.method === "GET") {
-      return sendJson(req, res, 200, { user: publicUser(user), scenarios: EVALUATION_SCENARIOS, ...(await getEvaluationDashboard()) });
+      return sendJson(req, res, 200, {
+        user: publicUser(user),
+        scenarios: EVALUATION_SCENARIOS,
+        question_bank_summary: loadEvaluationBankSummary(),
+        ...(await getEvaluationDashboard())
+      });
     }
     if (pathname === "/api/admin/evaluations/run" && req.method === "POST") {
       const body = JSON.parse(await readBody(req) || "{}");
@@ -3093,6 +3098,56 @@ const EVALUATION_SCENARIOS = {
     ]
   }
 };
+const EVALUATION_BANK_PATH = path.join(ROOT, "data", "evaluation-question-bank.jsonl");
+const EVALUATION_BANK_SUMMARY_PATH = path.join(ROOT, "data", "evaluation-question-bank-summary.json");
+
+function loadEvaluationBankSummary() {
+  try {
+    return JSON.parse(fs.readFileSync(EVALUATION_BANK_SUMMARY_PATH, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function loadEvaluationBankPrompts(limit = 240) {
+  try {
+    const lines = fs.readFileSync(EVALUATION_BANK_PATH, "utf8").split(/\r?\n/).filter(Boolean);
+    const buckets = new Map();
+    for (const line of lines) {
+      const row = JSON.parse(line);
+      if (!row?.prompt || !row?.category) continue;
+      if (!buckets.has(row.category)) buckets.set(row.category, []);
+      buckets.get(row.category).push(row.prompt);
+    }
+    const categories = [...buckets.keys()].sort();
+    const prompts = [];
+    const seen = new Set();
+    for (let round = 0; prompts.length < limit && round < lines.length; round += 1) {
+      for (const category of categories) {
+        const bucket = buckets.get(category) || [];
+        if (!bucket.length) continue;
+        const prompt = cleanText(bucket[(round * 17 + category.length * 7) % bucket.length], 180);
+        const key = normalizeMemoryText(prompt);
+        if (!prompt || seen.has(key)) continue;
+        seen.add(key);
+        prompts.push(prompt);
+        if (prompts.length >= limit) break;
+      }
+    }
+    return prompts;
+  } catch {
+    return [];
+  }
+}
+
+const QUESTION_BANK_SAMPLE_PROMPTS = loadEvaluationBankPrompts(240);
+if (QUESTION_BANK_SAMPLE_PROMPTS.length) {
+  EVALUATION_SCENARIOS.question_bank = {
+    label: "10000 題庫抽樣",
+    persona: "從 10000 題 Samantha 評測題庫中分層抽樣，包含連續碎聊、記憶回叫、情緒、事實查詢、時事、人名、修正、安全界線、工作幫助與主動開題。",
+    prompts: QUESTION_BANK_SAMPLE_PROMPTS
+  };
+}
 const MIN_EVALUATION_TURNS = 30;
 const MAX_EVALUATION_TURNS = 120;
 const EXTENDED_EVALUATION_PROMPTS = [

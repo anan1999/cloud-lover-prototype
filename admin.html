@@ -366,6 +366,10 @@
         ["測試輪數", "0"],
         ["高風險問題", "0"]
       ];
+      const bankSummary = data.question_bank_summary;
+      if (bankSummary?.total_questions) {
+        metrics.push(["題庫", `${Number(bankSummary.total_questions || 0).toLocaleString()} 題 / ${Number(bankSummary.total_threads || 0).toLocaleString()} 串`]);
+      }
       $("#evalMetrics").innerHTML = metrics.map(([label, value]) => `<div class="metric eval-metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
       const trend = data.score_trend || [];
       $("#evalTrend").innerHTML = trend.length ? trend.map(item => `

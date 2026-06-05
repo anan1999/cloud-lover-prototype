@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "check": "node --check server.js"
+    "check": "node --check server.js",
+    "generate:eval-bank": "node scripts/generate-evaluation-bank.js"
   },
   "dependencies": {
     "pg": "^8.16.0"
