@@ -1660,6 +1660,22 @@ function mockModel(conversation) {
   }, conversation);
 }
 
+function lookupModel(conversation) {
+  const safety = detectSafety(conversation.user_input || "");
+  if (safety !== "normal") return null;
+  const hasFacts = Array.isArray(conversation.web_facts) && conversation.web_facts.length > 0;
+  const hasNews = wantsCurrentEvents(conversation.user_input || "") && Array.isArray(conversation.current_events) && conversation.current_events.length > 0;
+  if (!hasFacts && !hasNews) return null;
+  return normalizeProviderResult({
+    reply: fallbackReplyFor(conversation, safety),
+    emotion: "calm",
+    safety,
+    memory_patch: [],
+    intimacy_delta: 0,
+    suggested_action: hasFacts ? "把查到的摘要整理成三句或時間線" : "選一則標題繼續聊"
+  }, conversation);
+}
+
 function responseSchema() {
   return {
     type: "object",
@@ -1999,6 +2015,10 @@ async function routeProviders(payload, conversation) {
       markProviderFailure(provider, error);
       attempts.push({ provider, error: sanitizeError(error.message) });
     }
+  }
+  const lookupResult = lookupModel(conversation);
+  if (lookupResult) {
+    return { result: lookupResult, provider: "lookup", model: "web_facts", latency_ms: now() - routeStartedAt, attempts, cache_hit: false };
   }
   if (ENABLE_MOCK_FALLBACK) {
     const remainingDelay = Math.max(0, MOCK_FALLBACK_DELAY_MS - (now() - routeStartedAt));
