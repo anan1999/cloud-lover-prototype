@@ -454,10 +454,14 @@ function wantsWebLookup(input) {
 }
 
 function extractLookupQuery(input) {
-  return cleanText(input, 80)
+  const text = cleanText(input, 120);
+  const knowMatch = text.match(/你知道(.{2,40}?)(?:是什麼|是誰)?嗎/u);
+  const raw = knowMatch?.[1] || text;
+  return cleanText(raw, 80)
     .replace(/^(請|可以|幫我|你可以|麻煩你)?(先)?(查一下|搜尋一下|搜尋|查|告訴我|說說)?/u, "")
     .replace(/你知道/u, "")
-    .replace(/是誰|是什麼人|是什麼|誰是|嗎|呢|？|\?/gu, "")
+    .replace(/^(我今天|今天|昨天|剛剛|剛才|剛|最近|去|去了|到)/u, "")
+    .replace(/是誰|是什麼人|是什麼|誰是|嗎|呢|玩|？|\?/gu, "")
     .trim();
 }
 
@@ -1608,6 +1612,9 @@ function closingTexture(characterKey, input) {
 }
 
 function knownConceptReply(subject, userName, characterKey, texture, closing) {
+  if (/computex|台北國際電腦展|臺北國際電腦展/i.test(subject)) {
+    return `${userName}，${texture}COMPUTEX 是台北的大型國際電腦展，重點通常在電腦硬體、晶片、AI、伺服器、筆電和各種新技術展示。你今天去那裡玩，應該會看到很多 AI PC、GPU、主機板、散熱、機器人或雲端運算相關的東西。你如果願意，我會比較想聽你現場看到哪個攤位最有感，而不是只聊規格。`;
+  }
   if (/賴清德|Lai Ching-te|William Lai/i.test(subject)) {
     return `${userName}，${texture}賴清德是中華民國第 16 任總統，2024 年 5 月就任。他原本是醫師，後來進入公共事務，曾任臺南市長、行政院長，也曾任副總統；現在是台灣主要政治人物之一。簡單說，如果你看到他的新聞，多半會跟台灣政府、兩岸關係、民主政治、經濟或民生政策有關。${closing}`;
   }
@@ -1734,6 +1741,7 @@ function memoryRecallReply(conversation, input, userName) {
 
 function sharedLifeEventReply(input, userName) {
   const text = cleanText(input, 180);
+  if (/你知道|是什麼|是誰|什麼意思|查一下|搜尋/.test(text)) return "";
   if (!/(今天|昨天|剛剛|剛才|剛|最近|上週|這週|早上|下午|晚上|週末)/.test(text)) return "";
   if (!/(去|到|見到|遇到|看到|聽到|參加|完成|開始|收到|買了|吃了|喝了|看了|去了|去了|做了|聊了|開會|面試|展覽|旅行|上課|發表|搬家|加班)/.test(text)) return "";
   if (/怎麼|為什麼|什麼是|可以幫我|幫我|架構|程式|API|資料庫/.test(text)) return "";
@@ -1791,12 +1799,12 @@ function fallbackReplyFor(conversation, safety) {
   if (eventsReply) return eventsReply;
   const factsReply = webFactsReply(conversation, input, userName);
   if (factsReply) return factsReply;
-  const lifeEventReply = sharedLifeEventReply(input, userName);
-  if (lifeEventReply) return lifeEventReply;
   const topicReply = proactiveTopicReply(conversation, input, userName, characterKey);
   if (topicReply) return topicReply;
   const generalReply = generalQuestionReply(input, userName, characterKey);
   if (generalReply) return generalReply;
+  const lifeEventReply = sharedLifeEventReply(input, userName);
+  if (lifeEventReply) return lifeEventReply;
   const recallReply = memoryRecallReply(conversation, input, userName);
   if (recallReply) return recallReply;
   if (/焦慮|擔心|緊張|不安|事情很多|好多事/.test(input)) {
