@@ -24,7 +24,7 @@ Gemini -> Codex -> Mock
    - `api`: direct OpenAI Responses API, preferred for fast production fallback.
    - `worker`: an optional always-warm service that can hold its own model connection.
    - `cli`: local Codex CLI fallback, useful for development but slower because every request starts a process.
-   Codex can wait up to one minute. If Gemini and Codex both fail or time out, use mock as the final fallback so the chat surface does not feel dead.
+   Codex can wait up to one minute. If Gemini and Codex both fail fast, wait until `MOCK_FALLBACK_DELAY_MS` has elapsed before using mock, so mock never appears instantly as if it were the real model.
 8. Normalize model output into the product contract.
 9. Store user message, AI reply, safety label, emotion, provider, memory patches, and relationship continuity.
 

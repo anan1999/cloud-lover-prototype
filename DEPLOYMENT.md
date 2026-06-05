@@ -60,6 +60,7 @@ CODEX_WORKER_TOKEN=
 
 PROVIDER_TIMEOUT_MS=60000
 GEMINI_TIMEOUT_MS=12000
+MOCK_FALLBACK_DELAY_MS=60000
 CACHE_TTL_MS=120000
 PROVIDER_COOLDOWN_MS=60000
 RATE_LIMIT_WINDOW_MS=60000
@@ -71,7 +72,7 @@ Important: rotate any provider keys that were pasted into chat before using prod
 
 Production fallback should use `CODEX_BACKEND=api` or `CODEX_BACKEND=worker`. Render cannot use the Codex login from your local desktop app, so `CODEX_BACKEND=api` needs `CODEX_API_KEY` or `OPENAI_API_KEY`.
 
-`GEMINI_TIMEOUT_MS=12000` keeps the first provider fast. If Gemini does not answer quickly, the request moves to Codex. `CODEX_TIMEOUT_MS=60000` gives Codex up to one minute before mock is used as the final fallback.
+`GEMINI_TIMEOUT_MS=12000` keeps the first provider fast. If Gemini does not answer quickly, the request moves to Codex. `CODEX_TIMEOUT_MS=60000` gives Codex up to one minute. `MOCK_FALLBACK_DELAY_MS=60000` prevents mock from appearing instantly when providers fail fast because a key or backend is missing.
 
 Optional local CLI fallback:
 

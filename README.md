@@ -110,6 +110,7 @@ CODEX_WORKER_TOKEN=
 
 PROVIDER_TIMEOUT_MS=60000
 GEMINI_TIMEOUT_MS=12000
+MOCK_FALLBACK_DELAY_MS=60000
 CACHE_TTL_MS=120000
 PROVIDER_COOLDOWN_MS=60000
 RATE_LIMIT_WINDOW_MS=60000
@@ -126,7 +127,7 @@ BODY_LIMIT_BYTES=65536
 - Set `NODE_ENV=production` on the host.
 - Set `ALLOWED_ORIGINS` to your real domain.
 - Keep `EXPOSE_DEBUG=0` and `ENABLE_PROVIDER_STATUS=0` in production.
-- Use `Gemini -> Codex -> Mock` in production. Gemini gets a short fast-path timeout; Codex can wait up to one minute; mock is last resort only.
+- Use `Gemini -> Codex -> Mock` in production. Gemini gets a short fast-path timeout; Codex can wait up to one minute; mock is delayed by `MOCK_FALLBACK_DELAY_MS` and is last resort only.
 - Use `CODEX_BACKEND=api` or a warm `CODEX_WORKER_URL` for fast production fallback. `CODEX_BACKEND=cli` is useful locally, but every request starts a Codex process and is much slower.
 - Set spend caps and rate limits in provider dashboards.
 - Review `privacy.html`, `terms.html`, and `safety.html` before inviting users.

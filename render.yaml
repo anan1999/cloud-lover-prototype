@@ -34,6 +34,8 @@ services:
         value: "12000"
       - key: CODEX_TIMEOUT_MS
         value: "60000"
+      - key: MOCK_FALLBACK_DELAY_MS
+        value: "60000"
       - key: CODEX_MODEL
         value: gpt-5.5
       - key: CODEX_BACKEND

@@ -17,6 +17,7 @@ const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || (IS_PROD ? 30 : 120)
 const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 12_000);
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || PROVIDER_TIMEOUT_MS);
 const PROVIDER_COOLDOWN_MS = Number(process.env.PROVIDER_COOLDOWN_MS || 60_000);
+const MOCK_FALLBACK_DELAY_MS = Number(process.env.MOCK_FALLBACK_DELAY_MS || (IS_PROD ? 60_000 : 0));
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 120_000);
 const NEWS_CACHE_TTL_MS = Number(process.env.NEWS_CACHE_TTL_MS || 15 * 60_000);
 const EXPOSE_DEBUG = process.env.EXPOSE_DEBUG === "1" || !IS_PROD;
@@ -1210,6 +1211,10 @@ function setCachedResponse(conversation, value) {
   responseCache.set(cacheKey(conversation), { value, expiresAt: now() + CACHE_TTL_MS });
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function getProviderHealth(provider) {
   return providerHealth.get(provider) || {
     failures: 0,
@@ -1301,6 +1306,9 @@ function closingTexture(characterKey, input) {
 }
 
 function knownConceptReply(subject, userName, characterKey, texture, closing) {
+  if (/黃仁勳|Jensen Huang|NVIDIA|輝達|英偉達/i.test(subject)) {
+    return `${userName}，${texture}黃仁勳是 NVIDIA（輝達）的共同創辦人，也是現任執行長。他最被大家熟悉的是把 GPU 從遊戲顯示卡一路推到 AI 運算核心，讓 NVIDIA 在生成式 AI、資料中心和 AI PC 這幾年變成很關鍵的公司。你如果是在 COMPUTEX 看到他的消息，通常會跟 AI 晶片、GPU、機器人或個人電腦的新方向有關。${closing}`;
+  }
   if (/量子|quantum/i.test(subject)) {
     return characterKey === "ji"
       ? `${userName}，${texture}量子是物理裡某些量的最小單位，像光的能量不是一整片連續的水，而是一份一份地被拿出來。它很小，小到我們平常的直覺不太管用；所以量子世界常常看起來不像日常世界那麼聽話。${closing}`
@@ -1427,7 +1435,8 @@ function sharedLifeEventReply(input, userName) {
 function generalQuestionReply(input, userName, characterKey) {
   const normalized = input.replace(/[？?]/g, "").trim();
   const whatMatch = normalized.match(/^(?:什麼是(.{1,32})|(.{1,32})是什麼)$/);
-  const subject = whatMatch ? cleanText(whatMatch[1] || whatMatch[2] || "", 40) : "";
+  const whoMatch = normalized.match(/^(?:你知道)?(.{1,32})(?:是誰|是什麼人)$/);
+  const subject = cleanText(whatMatch?.[1] || whatMatch?.[2] || whoMatch?.[1] || "", 40);
   const texture = characterTexture(characterKey, input);
   const closing = closingTexture(characterKey, input);
   if (/^AI$|人工智慧|AI/.test(subject) || /AI是什麼|什麼是AI|人工智慧是什麼/.test(normalized)) {
@@ -1475,7 +1484,10 @@ function fallbackReplyFor(conversation, safety) {
   if (/吵|吵架|生氣|罵|衝突|不爽/.test(input)) {
     return `${userName}，我可以陪你把那股想吵的力氣先放在這裡。你不用把話吞回去，也不用立刻變溫柔；先告訴我，現在最想被我聽見的是哪一句？`;
   }
-  if (/架構|技術|系統|資料庫|後端|前端|API|設計|實作|工作|專案/.test(input)) {
+  if (/工作.*(做不好|不會|卡住|失敗|很爛|沒效率|拖延|壓力)|做不好|上班.*(累|煩|焦慮|壓力)/.test(input)) {
+    return `${userName}，聽起來你不是單純「不努力」，而是現在對工作的感覺有點被壓住了。我們先不要把它判成你做不好，先拆成三塊：哪一件事最卡、卡住是因為不會做還是不知道先做哪個、下一步能不能小到只花 10 分鐘。你先丟給我最卡的那一件，我陪你把它拆小。`;
+  }
+  if (/架構|技術|系統|資料庫|後端|前端|API|演算法|模型|部署|Git|github|程式|程式碼|設計.*系統|實作.*功能|專案.*架構/.test(input)) {
     return `${userName}，我會把這個架構拆成四層：第一層是聊天 UI，負責輸入、歷史與模式切換；第二層是 backend chat API，負責安全檢查、情緒判斷與 provider fallback；第三層是 memory layer，把偏好、工作主題、反覆擔心的事存成可查詢的記憶；第四層是 prompt builder，把相關記憶和最近對話組成 Samantha 的上下文。MVP 先用規則和資料庫查詢，之後再補 embedding retrieval，會比較穩。`;
   }
   if (/興趣|喜歡什麼|平常.*做|平常.*看|嗜好/.test(input)) {
@@ -1899,6 +1911,7 @@ async function callProvider(provider, payload, conversation) {
 async function routeProviders(payload, conversation) {
   const cached = getCachedResponse(conversation);
   if (cached) return { ...cached, attempts: [{ provider: "cache", error: "cache hit" }], cache_hit: true };
+  const routeStartedAt = now();
   const attempts = [];
   for (const provider of PROVIDER_ORDER) {
     const health = getProviderHealth(provider);
@@ -1920,7 +1933,12 @@ async function routeProviders(payload, conversation) {
     }
   }
   if (ENABLE_MOCK_FALLBACK) {
-    return { result: mockModel(conversation), provider: "mock", model: "mock", latency_ms: 0, attempts, cache_hit: false };
+    const remainingDelay = Math.max(0, MOCK_FALLBACK_DELAY_MS - (now() - routeStartedAt));
+    if (remainingDelay > 0) {
+      attempts.push({ provider: "mock", error: `delayed ${remainingDelay}ms before fallback` });
+      await sleep(remainingDelay);
+    }
+    return { result: mockModel(conversation), provider: "mock", model: "mock", latency_ms: now() - routeStartedAt, attempts, cache_hit: false };
   }
   const error = new Error("All LLM providers failed");
   error.statusCode = 503;
