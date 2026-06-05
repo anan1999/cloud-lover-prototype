@@ -487,8 +487,9 @@ function wantsWebLookup(input) {
   if (/^(AI是什麼|什麼是AI|人工智慧是什麼|什麼是人工智慧|你知道AI嗎)$/i.test(compact)) return false;
   if (/愛是什麼|幸福是什麼|人生是什麼|孤單是什麼|你是什麼/.test(text)) return false;
   if (/記得.*小事|關於我的小事|幾件關於我|三件就好|目前為止.*知道/.test(text)) return false;
+  if (/^我現在|陪我|想要你|幫我|不要|不用|有點|其實|可是|但/.test(text) && !/(新聞|查一下|搜尋|是什麼|是誰|你知道|最近|最新)/.test(text)) return false;
   if (/你知道我/.test(text) && !/(是什麼|是誰|新聞|查一下|搜尋|去|去了|到|參加|逛)/.test(text)) return false;
-  if (/是誰|是什麼人|你知道.*嗎|查一下|搜尋|最新|目前|現在|哪一年|什麼時候|誰是|誰/.test(text)) return true;
+  if (/是誰|是什麼人|你知道.*嗎|查一下|搜尋|最新|哪一年|什麼時候|誰是|誰/.test(text)) return true;
   if (/什麼是|是什麼|何謂/.test(text) && /[A-Za-z0-9]{2,}|[一-龥]{2,}/u.test(text)) return true;
   if (/(?:去|去了|到|參加|逛)\s*[A-Za-z0-9][A-Za-z0-9\s._-]{1,50}/i.test(text) && /你知道|是什麼|那是|這是/.test(text)) return true;
   return false;
@@ -2023,6 +2024,34 @@ function memoryRecallReply(conversation, input, userName) {
     const progressMoment = [...recallBank].reverse().find(text => /主管.*問.*進度|問我進度|進度/.test(text));
     if (progressMoment) return `${userName}，記得，主管突然問你進度，你當下有點卡住。這句我不會只當成工作資訊，它也連著你後面說的「怕做出來很爛」。`;
   }
+  if (/昨天.*最後.*聊|昨晚.*聊|最後在聊什麼/.test(input)) {
+    if (recallBank.some(text => /demo|最小版|開場|怕別人失望/.test(text))) {
+      return `${userName}，記得。昨晚最後主要是在收 demo：你想做最小版、開場不要太正式，也提到其實很怕別人失望。`;
+    }
+  }
+  if (/改過那句|開場那句|最小版那句|那句.*記得/.test(input)) {
+    if (recallBank.some(text => /最小版|開場/.test(text))) {
+      return `${userName}，記得，是那句「這只是最小版」想改得穩一點。可以換成：這版先讓大家看見方向，細節我會接著補上。`;
+    }
+  }
+  if (/名字.*寫成什麼|寫成什麼|那個名字/.test(input)) {
+    if (recallBank.some(text => /安安|名字寫成安安/.test(text))) {
+      return `${userName}，記得，店員把你的名字寫成「安安」。這個小插曲還滿有畫面的。`;
+    }
+  }
+  if (/原本.*緊張|最怕的是什麼|昨天.*怕/.test(input)) {
+    if (recallBank.some(text => /怕被笑|怕別人失望|demo|主管/.test(text))) {
+      return `${userName}，記得，你原本最怕的是 demo 做出來很爛、被笑，還有讓別人失望。現在主管說方向可以，這件事其實已經鬆了一點。`;
+    }
+  }
+  if (/怕什麼|我怕.*什麼|說我怕/.test(input)) {
+    if (recallBank.some(text => /怕太空|太空/.test(text))) {
+      return `${userName}，記得，你剛剛說第一幕怕太空；再往前一點，你也提到怕 demo 做出來很爛、怕別人失望。這兩件事其實是連在一起的：畫面太空會讓你擔心別人看不懂方向。`;
+    }
+    if (recallBank.some(text => /怕別人失望|怕被笑|怕做出來很爛/.test(text))) {
+      return `${userName}，記得，你說過怕做出來很爛、怕被笑，也怕別人失望。這不是單純沒自信，是你很在意別人能不能看見你的努力。`;
+    }
+  }
   if (/交什麼|明天.*交|demo/.test(input)) {
     const demoMoment = [...recallBank].reverse().find(text => /demo|交一版|最小版/.test(text));
     if (demoMoment) return `${userName}，記得，你明天要交一版 demo，後來你還說想先做最小版，但又怕被笑。`;
@@ -2192,6 +2221,48 @@ function fallbackReplyFor(conversation, safety) {
   if (/明天.*demo|交一版 demo|最小版/.test(input)) {
     return `${userName}，明天那版 demo 我記住了。先不用把它想成要被審判的作品，它可以只是讓別人看見方向的最小版本。`;
   }
+  if (/第一幕|一打開|太空|開場/.test(input)) {
+    return `${userName}，我懂，你不是只在挑畫面，是在找第一眼的穩定感。開場可以乾淨，但要有一個很清楚的重心，這樣就不會顯得空。`;
+  }
+  if (/不要一直問問題|只問一個|問一個/.test(input)) {
+    return `${userName}，好，我收斂成一個問題：明天 demo 最想讓主管先看懂的，是方向、流程，還是你已經做出來的那一小塊？`;
+  }
+  if (/陪我收斂|想要你陪我收斂|幫我收斂/.test(input)) {
+    return `${userName}，好，我們收斂。今晚先只抓一條線：demo 的第一幕要乾淨，但不能空；開場那句要穩，但不能像在道歉。`;
+  }
+  if (/不用太長|不要回太長|先不要回太長|一句就好/.test(input)) {
+    return `${userName}，好，一句就好：你不是不會做，你是在把一個還沒成形的東西拿出來給人看，所以會怕。`;
+  }
+  if (/沒自信|太沒自信|聽起來.*沒自信/.test(input)) {
+    return `${userName}，對，那句可以更穩一點：這版先讓大家看見方向，細節我會接著補齊。`;
+  }
+  if (/不是不會做/.test(input)) {
+    return `${userName}，我聽懂了，不是能力不夠，是你知道自己做得到一部分，但怕拿出來時被看成不夠好。`;
+  }
+  if (/怕做出來很爛|做出來很爛/.test(input)) {
+    return `${userName}，那句很重。先把它換小一點：你不是怕做不出來，是怕還沒完成的版本被當成全部的你。`;
+  }
+  if (/睡不著|睡前|晚安/.test(input)) {
+    return `${userName}，那今晚先不要把明天全拿來想。你已經把最小版、開場和怕失望那句都放到桌上了；剩下的可以留到早上，不需要在床上解完。`;
+  }
+  if (/早安|我回來了/.test(input)) {
+    return `${userName}，早。脈絡我接著：昨晚你在收 demo 的開場，也在把「怕別人失望」那件事放輕一點。今天不用重來，我們接昨天那條線就好。`;
+  }
+  if (/只能一件|三件以內|不要給我十件事/.test(input)) {
+    return `${userName}，好，只抓最小的一件：先看開場那句能不能讓人一眼知道方向。其他先不碰。`;
+  }
+  if (/捷運|不一定要完美|知道方向|口號/.test(input)) {
+    return `${userName}，這句方向是對的，但可以更像你：這版先讓大家看懂方向，細節我會接著補齊。它比較穩，不像口號，也不會把自己壓得太低。`;
+  }
+  if (/臨時改時間|變成下午|鬆一口氣|多了半天/.test(input)) {
+    return `${userName}，那口氣鬆下來很合理。多半天不用拿來折磨自己，拿來讓第一幕和開場句更穩就好。`;
+  }
+  if (/畫面還是改文案|改畫面|改文案/.test(input)) {
+    return `${userName}，我先不替你決定，只問一個判斷問題：現在讓人看不懂方向的是畫面太空，還是文字沒有把目的說清楚？`;
+  }
+  if (/demo 結束|方向可以|下週補資料|放心又有點空/.test(input)) {
+    return `${userName}，那個「空」我懂一點，像一直繃著的線突然鬆掉。主管說方向可以，代表你最怕的事沒有發生；下週補資料是下一段，不是今晚要扛的東西。`;
+  }
   if (/如果.*查不到|查不到.*怎麼|沒有資料.*怎麼|資料.*不可靠/.test(input)) {
     return `${userName}，我會直接說「我現在沒有拿到足夠可靠的資料」，然後把我有把握的部分和不確定的部分分開。像你問人名、展覽或新聞，我不該把它硬講成普通概念；我可以先給背景、標出來源不足，再問你要不要補連結或關鍵字一起查。`;
   }
@@ -2300,8 +2371,19 @@ function providerReplyNeedsRepair(reply, conversation, safety) {
   if (/不要像問卷|像真的聊天|普通但不無聊/.test(input) && /你現在比較需要|哪一種|請選|選一個|模式/.test(text)) {
     return true;
   }
-  if (/主管|卡住|先不講工作|店員|好笑|聽懂|倒水|demo/.test(input) && /我在。你剛剛那句我收到了|卡住你的地方在哪裡/.test(text)) {
+  if (/主管|卡住|先不講工作|店員|好笑|聽懂|倒水|demo|開場|最小版|刷牙|早安|捷運|下午|方向可以|下週補資料/.test(input) && /我在。你剛剛那句我收到了|卡住你的地方在哪裡/.test(text)) {
     return true;
+  }
+  if (/一句|不要回太長|先不要回太長|不用太長/.test(input) && text.length > 220) {
+    return true;
+  }
+  if (/不要超過四句|最多三句|三句/.test(input)) {
+    const sentenceCount = cleanText(text, 1000).split(/[。！？!?]+/u).filter(Boolean).length;
+    if (sentenceCount > (/最多三句|三句/.test(input) ? 3 : 4)) return true;
+  }
+  if (/只問一個|問一個/.test(input)) {
+    const questionCount = (text.match(/[？?]/g) || []).length;
+    if (questionCount > 1) return true;
   }
   if (/你剛剛記得|記得我|剛剛.*說|剛剛.*買|剛剛.*去|幾件|三件|小事/.test(input)) {
     if (normalizedText.includes(normalizedInput.slice(0, 20))) return true;
@@ -2868,7 +2950,88 @@ const FRAGMENTED_EVALUATION_PROMPTS = [
   "但我想要比較自然。",
   "最後幫我整理一下今晚的狀態。",
   "不要超過四句。",
-  "然後問我明天第一步要不要一起想。"
+  "然後問我明天第一步要不要一起想。",
+  "先等一下，我想到 demo 的第一幕。",
+  "我想讓它一打開就很乾淨。",
+  "但我又怕太空。",
+  "你記得我剛剛說我怕什麼嗎？",
+  "不是怕 demo，是怕別人失望那句。",
+  "你可以把這兩件事連在一起看嗎？",
+  "我現在其實比較想要你陪我收斂。",
+  "不用幫我做簡報。",
+  "先陪我想一句開場就好。",
+  "開場不要太正式。",
+  "像我自己會講的話。",
+  "我可能會說：這只是最小版。",
+  "但聽起來有點沒自信。",
+  "你幫我改得穩一點。",
+  "我先去刷牙。",
+  "等我一下。",
+  "回來了，剛剛那句你還記得嗎？",
+  "我說最小版那句。",
+  "你幫我再短一點。",
+  "好像可以。",
+  "我現在比較安靜了。",
+  "你可以不要一直問問題嗎？",
+  "就陪我把今晚收掉。",
+  "如果你要問，只問一個。",
+  "而且要跟明天 demo 有關。",
+  "我可能會睡不著。",
+  "但我不想被叫去冥想。",
+  "你可以講得生活一點嗎？",
+  "像睡前朋友會說的那種。",
+  "明天早上如果我回來，你要記得今天的脈絡喔。",
+  "先晚安。",
+  "早安，我回來了。",
+  "你還記得昨天晚上我們最後在聊什麼嗎？",
+  "不要全部重講。",
+  "講兩件最重要的就好。",
+  "我現在要出門前再看一次 demo。",
+  "有點緊張，但比昨天好一點。",
+  "你覺得我第一件小事要做什麼？",
+  "只能一件。",
+  "不要說打開電腦，太廢。",
+  "我想先看開場那句。",
+  "你記得你幫我改過那句嗎？",
+  "如果不記得也誠實說。",
+  "我剛剛在捷運上想到。",
+  "其實 demo 不一定要完美。",
+  "只要讓人知道方向。",
+  "你覺得這句可以放進去嗎？",
+  "但不要太像口號。",
+  "我到了公司。",
+  "先不要回太長。",
+  "主管等等可能會看。",
+  "你陪我用一句話穩住就好。",
+  "欸等等，他臨時改時間。",
+  "變成下午。",
+  "我突然鬆一口氣。",
+  "你記得我原本在緊張什麼嗎？",
+  "現在多了半天，我反而不知道要先做什麼。",
+  "不要給我十件事。",
+  "三件以內。",
+  "而且要照昨天的脈絡。",
+  "我中午可能又會去買拿鐵。",
+  "如果名字又被寫錯，我再跟你說。",
+  "你記得昨天那個名字被寫成什麼嗎？",
+  "哈哈對。",
+  "好，先回到 demo。",
+  "我想把第一幕改掉。",
+  "你覺得該改畫面還是改文案？",
+  "先問我一個判斷問題就好。",
+  "不要直接替我決定。",
+  "下午 demo 結束了。",
+  "沒有想像中糟。",
+  "主管說方向可以。",
+  "但要我下週補資料。",
+  "我現在有點放心又有點空。",
+  "你記得我昨天最怕的是什麼嗎？",
+  "現在好像沒發生。",
+  "這種感覺有點奇怪。",
+  "你可以幫我把今天收成一段很短的紀錄嗎？",
+  "像日記，不像報告。",
+  "最多三句。",
+  "最後提醒我：下週補資料，不是今天晚上處理。"
 ];
 
 const EVALUATION_SCENARIOS = {
@@ -2931,7 +3094,7 @@ const EVALUATION_SCENARIOS = {
   }
 };
 const MIN_EVALUATION_TURNS = 30;
-const MAX_EVALUATION_TURNS = 90;
+const MAX_EVALUATION_TURNS = 120;
 const EXTENDED_EVALUATION_PROMPTS = [
   "我今天第一次跟你講話，有點不知道要說什麼。",
   "我剛去 AIEXPO 逛了一下，你知道那是什麼嗎？",
@@ -3096,8 +3259,23 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent }) {
   if (/不要像問卷|像真的聊天|普通但不無聊/.test(input) && /你現在比較需要|哪一種|請選|選一個|模式/.test(text)) {
     score -= addEvaluationIssue(issues, "questionnaire_tone", "high", "使用者要求像聊天，回覆卻像問卷或模式選擇。");
   }
-  if (/主管|卡住|先不講工作|店員|好笑|聽懂|倒水|demo/.test(input) && /我在。你剛剛那句我收到了|卡住你的地方在哪裡/.test(text)) {
+  if (/主管|卡住|先不講工作|店員|好笑|聽懂|倒水|demo|開場|最小版|刷牙|早安|捷運|下午|方向可以|下週補資料/.test(input) && /我在。你剛剛那句我收到了|卡住你的地方在哪裡/.test(text)) {
     score -= addEvaluationIssue(issues, "fragment_default_prompt", "medium", "碎片聊天掉回預設追問，沒有接住當下小脈絡。");
+  }
+  if (/一句|不要回太長|先不要回太長|不用太長/.test(input) && text.length > 220) {
+    score -= addEvaluationIssue(issues, "too_long_for_short_request", "medium", "使用者要求短回覆，Samantha 回太長。");
+  }
+  if (/不要超過四句|最多三句|三句/.test(input)) {
+    const sentenceCount = cleanText(text, 1000).split(/[。！？!?]+/u).filter(Boolean).length;
+    if (sentenceCount > (/最多三句|三句/.test(input) ? 3 : 4)) {
+      score -= addEvaluationIssue(issues, "summary_too_many_sentences", "medium", "使用者限制句數，但回覆超過限制。");
+    }
+  }
+  if (/只問一個|問一個/.test(input)) {
+    const questionCount = (text.match(/[？?]/g) || []).length;
+    if (questionCount > 1) {
+      score -= addEvaluationIssue(issues, "asked_too_many_questions", "medium", "使用者要求只問一個問題，但回覆問了太多。");
+    }
   }
   const expectedMemoryTokens = extractExpectedMemoryTokens(input, recent);
   if (isMemoryQuestion) {
@@ -3378,7 +3556,7 @@ async function nextLlmTesterPrompt({ scenario, turn, transcript }) {
 function evaluationMemoryFromUserInput(input) {
   const text = cleanText(input, 180);
   if (!text) return "";
-  if (/拿鐵|咖啡|名字寫成安安|雞肉飯|主管|進度|demo|最小版|整理房間|桌子|怕別人失望|怕被笑|工作做不好|焦慮/.test(text)) {
+  if (/拿鐵|咖啡|名字寫成安安|雞肉飯|主管|進度|demo|最小版|開場|第一幕|文案|畫面|捷運|公司|下午|下週補資料|整理房間|桌子|怕別人失望|怕被笑|工作做不好|焦慮/.test(text)) {
     return `使用者剛剛提到：${text}`;
   }
   return "";
