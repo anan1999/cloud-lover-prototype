@@ -461,7 +461,7 @@ function extractLookupQuery(input) {
     .replace(/^(請|可以|幫我|你可以|麻煩你)?(先)?(查一下|搜尋一下|搜尋|查|告訴我|說說)?/u, "")
     .replace(/你知道/u, "")
     .replace(/^(我今天|今天|昨天|剛剛|剛才|剛|最近|去|去了|到)/u, "")
-    .replace(/是誰|是什麼人|是什麼|誰是|嗎|呢|玩|？|\?/gu, "")
+    .replace(/你知道|那是|這是|是誰|是什麼人|是什麼|誰是|嗎|呢|玩|？|\?/gu, "")
     .trim();
 }
 
@@ -1763,7 +1763,11 @@ function generalQuestionReply(input, userName, characterKey) {
   const normalized = input.replace(/[？?]/g, "").trim();
   const whatMatch = normalized.match(/^(?:什麼是(.{1,32})|(.{1,32})是什麼)$/);
   const whoMatch = normalized.match(/^(?:你知道)?(.{1,32})(?:是誰|是什麼人)$/);
-  const subject = cleanText(whatMatch?.[1] || whatMatch?.[2] || whoMatch?.[1] || "", 40);
+  const knowMatch = normalized.match(/你知道(.{2,40}?)(?:那|這)?(?:是什麼|是誰)?嗎?$/);
+  const subject = cleanText(whatMatch?.[1] || whatMatch?.[2] || whoMatch?.[1] || knowMatch?.[1] || "", 40)
+    .replace(/^(我今天|今天|昨天|去|去了|到)/u, "")
+    .replace(/那是|這是|玩/gu, "")
+    .trim();
   const texture = characterTexture(characterKey, input);
   const closing = closingTexture(characterKey, input);
   if (/^AI$|人工智慧|AI/.test(subject) || /AI是什麼|什麼是AI|人工智慧是什麼/.test(normalized)) {
