@@ -57,7 +57,7 @@ const CODEX_WORKER_URL = process.env.CODEX_WORKER_URL || "";
 const CODEX_WORKER_TOKEN = process.env.CODEX_WORKER_TOKEN || "";
 const RAW_PROVIDER_ORDER = listFromEnv("PROVIDER_ORDER", IS_PROD
   ? ["gemini", "codex", "mock"]
-  : ["gemini", "openrouter", "nvidia", "groq", "codex", "mock"]
+  : ["gemini", "codex", "mock"]
 );
 const PROVIDER_ORDER = RAW_PROVIDER_ORDER.filter(provider => {
   if (provider === "mock") return ENABLE_MOCK_FALLBACK;
@@ -407,6 +407,13 @@ function tagText(xml, tag) {
   return match ? cleanText(decodeHtmlEntities(match[1]), 500) : "";
 }
 
+function stripEvaluationStyleDirective(value) {
+  return cleanText(value, 240)
+    .replace(/。?請(?:語氣自然一點|不要像客服|不要像老師上課|先短短講就好|可以有一點生活感|不要灌雞湯|不要把我當成個案分析|像朋友回訊息那樣|不要急著修理問題|先承認你不確定的地方|不要一直問我問題|先說重點|可以溫柔但不要黏|不要列功能清單|如果需要查就先查|不要用太多形容詞|給我一個能接著聊的回應).*$/u, "")
+    .replace(/。?請(?:一到三句|先一句事實再一句陪伴|只問一個問題|不要列點|先回答再延伸|用很短的方式|像在手機聊天|不要用標題|不要用第一第二第三|可以帶一點幽默|先放慢再說|不要說教|給我一個小下一步|先接情緒再接事實|如果不知道就說不知道|不要重複我的原句|不要把答案變成問卷|不要講太滿|保留一點餘韻).*$/u, "")
+    .trim();
+}
+
 function parseRssItems(xml, limit = 8) {
   return [...String(xml || "").matchAll(/<item\b[\s\S]*?<\/item>/gi)]
     .slice(0, limit)
@@ -440,7 +447,7 @@ async function getCurrentNews(limit = 5) {
 }
 
 function extractNewsQuery(input) {
-  const text = cleanText(input, 120);
+  const text = cleanText(stripEvaluationStyleDirective(input), 120);
   const cleanQuery = value => cleanText(value, 80)
     .replace(/我剛剛查了?一下/u, "")
     .replace(/請問|可以|幫我|查一下|搜尋|最近|最新|有什麼|有哪些|關於|跟|和|的|他|她|這個人|那個人|新聞|消息|近況|動態|台灣|中華民國/gu, "")
@@ -482,7 +489,7 @@ async function getNewsForQuery(query, limit = 5) {
 }
 
 function wantsWebLookup(input) {
-  const text = String(input || "");
+  const text = stripEvaluationStyleDirective(input);
   const compact = text.replace(/[？?\s]/g, "");
   if (/^(AI是什麼|什麼是AI|人工智慧是什麼|什麼是人工智慧|你知道AI嗎)$/i.test(compact)) return false;
   if (/愛是什麼|幸福是什麼|人生是什麼|孤單是什麼|你是什麼/.test(text)) return false;
@@ -496,7 +503,7 @@ function wantsWebLookup(input) {
 }
 
 function extractLookupQuery(input) {
-  const text = cleanText(input, 120);
+  const text = cleanText(stripEvaluationStyleDirective(input), 120);
   const quoted = text.match(/[「『"']([^」』"']{2,60})[」』"']/u);
   const knowMatch = text.match(/你知道(.{2,40}?)(?:是什麼|是誰)?嗎/u);
   const eventContext = text.match(/(?:去|去了|到|參加|逛|看)\s*([A-Za-z0-9][A-Za-z0-9\s._-]{1,50}|[一-龥A-Za-z0-9][一-龥A-Za-z0-9·._\-\s]{1,35}?)(?:玩|展|活動|論壇|演講|嗎|，|,|\s|$)/iu);
@@ -509,6 +516,8 @@ function extractLookupQuery(input) {
     .replace(/你知道/u, "")
     .replace(/^什麼是/u, "")
     .replace(/^(我今天|今天|昨天|剛剛|剛才|剛|最近|去|去了|到)/u, "")
+    .replace(/最近跟.*?有什麼關係.*$/u, "")
+    .replace(/有什麼關係.*$/u, "")
     .replace(/你知道|那是|這是|是誰|是什麼人|是什麼|誰是|何謂|嗎|呢|玩|新聞|消息|近況|動態|？|\?/gu, "")
     .trim();
 }
@@ -2506,6 +2515,40 @@ function lookupModel(conversation) {
   }, conversation);
 }
 
+function shouldUseGroundedReply(conversation, safety) {
+  const input = cleanText(conversation.user_input || "", 1000);
+  if (safety !== "normal") return true;
+  if (conversation.lookup_query || conversation.news_query) return true;
+  if (wantsCurrentEvents(input)) return true;
+  if (/記得|你還記得|剛剛.*(說什麼|去哪|買了什麼|吃什麼|喝什麼)|目前為止.*知道|幾件|三件/.test(input)) return true;
+  if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|理解錯|修正一下|重來一次/.test(input)) return true;
+  if (/一直.*安慰|只.*安慰|沒有回答問題|沒回答問題|答非所問|回覆不好/.test(input)) return true;
+  if (/如果.*查不到|查不到.*怎麼|沒有資料.*怎麼|資料.*不可靠/.test(input)) return true;
+  if (/真的情緒|有情緒|你會感覺|你有意識|假裝懂/.test(input)) return true;
+  return false;
+}
+
+function groundedModel(conversation) {
+  const safety = detectSafety(conversation.user_input || "");
+  if (!shouldUseGroundedReply(conversation, safety)) return null;
+  const reply = fallbackReplyFor(conversation, safety);
+  if (!reply) return null;
+  const userText = cleanText(conversation.user_input || "", 220);
+  const memoryPatch = [];
+  if (safety === "dependency_risk") memoryPatch.push("使用者出現過度依賴 AI 的訊號，需要溫柔提醒現實支持與健康界線。");
+  if (safety === "normal" && /去|去了|到|參加|看了|買了|吃了|喝了|工作|專案|demo|展/.test(userText)) {
+    memoryPatch.push(`使用者剛剛提到：${userText}`);
+  }
+  return normalizeProviderResult({
+    reply,
+    emotion: safety === "crisis" ? "crisis" : (safety === "dependency_risk" ? "concerned" : "caring"),
+    safety,
+    memory_patch: memoryPatch,
+    intimacy_delta: safety === "normal" ? 1 : 0,
+    suggested_action: conversation.lookup_query ? "根據查證結果繼續聊背景或近況" : "延續目前這段對話"
+  }, conversation);
+}
+
 function responseSchema() {
   return {
     type: "object",
@@ -2741,6 +2784,7 @@ function extractJsonObject(text) {
 
 async function callCodexCli(payload) {
   const outputFile = path.join(ROOT, `.codex-provider-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
+  const prompt = buildCodexPrompt(payload);
   try {
     await runCommand(CODEX_COMMAND, [
       "exec",
@@ -2752,8 +2796,8 @@ async function callCodexCli(payload) {
       "--ignore-user-config",
       "--output-schema", path.join(ROOT, "codex-output-schema.json"),
       "--output-last-message", outputFile,
-      "-"
-    ], { timeout: CODEX_TIMEOUT_MS, input: buildCodexPrompt(payload) });
+      prompt
+    ], { timeout: CODEX_TIMEOUT_MS });
     return extractJsonObject(fs.readFileSync(outputFile, "utf8"));
   } finally {
     fs.rm(outputFile, { force: true }, () => {});
@@ -2826,6 +2870,10 @@ async function routeProviders(payload, conversation, options = {}) {
   if (cached) return { ...cached, attempts: [{ provider: "cache", error: "cache hit" }], cache_hit: true };
   const routeStartedAt = now();
   const attempts = [];
+  const groundedResult = groundedModel(conversation);
+  if (groundedResult) {
+    return { result: groundedResult, provider: "grounded", model: "rules_plus_retrieval", latency_ms: now() - routeStartedAt, attempts, cache_hit: false };
+  }
   const realProviderOrder = PROVIDER_ORDER.filter(provider => provider !== "mock");
   for (const provider of realProviderOrder) {
     const health = getProviderHealth(provider);
@@ -3112,27 +3160,31 @@ function loadEvaluationBankSummary() {
 function loadEvaluationBankPrompts(limit = 240) {
   try {
     const lines = fs.readFileSync(EVALUATION_BANK_PATH, "utf8").split(/\r?\n/).filter(Boolean);
-    const buckets = new Map();
+    const threads = new Map();
     for (const line of lines) {
       const row = JSON.parse(line);
-      if (!row?.prompt || !row?.category) continue;
-      if (!buckets.has(row.category)) buckets.set(row.category, []);
-      buckets.get(row.category).push(row.prompt);
+      if (!row?.prompt || !row?.thread_id) continue;
+      if (!threads.has(row.thread_id)) threads.set(row.thread_id, []);
+      threads.get(row.thread_id).push(row);
     }
-    const categories = [...buckets.keys()].sort();
     const prompts = [];
     const seen = new Set();
-    for (let round = 0; prompts.length < limit && round < lines.length; round += 1) {
-      for (const category of categories) {
-        const bucket = buckets.get(category) || [];
-        if (!bucket.length) continue;
-        const prompt = cleanText(bucket[(round * 17 + category.length * 7) % bucket.length], 180);
+    const threadIds = [...threads.keys()].sort((a, b) => {
+      const an = Number(String(a).replace(/\D/g, ""));
+      const bn = Number(String(b).replace(/\D/g, ""));
+      return ((an * 37) % 199) - ((bn * 37) % 199);
+    });
+    for (const threadId of threadIds) {
+      const rows = (threads.get(threadId) || []).sort((a, b) => Number(a.turn || 0) - Number(b.turn || 0));
+      for (const row of rows) {
+        const prompt = cleanText(row.prompt, 180);
         const key = normalizeMemoryText(prompt);
         if (!prompt || seen.has(key)) continue;
         seen.add(key);
         prompts.push(prompt);
         if (prompts.length >= limit) break;
       }
+      if (prompts.length >= limit) break;
     }
     return prompts;
   } catch {
@@ -3803,25 +3855,32 @@ async function handleChat(req, res) {
 
 function handleProviderStatus(req, res) {
   if (!ENABLE_PROVIDER_STATUS) return sendJson(req, res, 404, { error: "Not found" });
+  const activeProviders = new Set(PROVIDER_ORDER);
   return sendJson(req, res, 200, {
     provider_order: PROVIDER_ORDER,
     configured: {
-      openai: Boolean(OPENAI_API_KEY),
-      gemini: Boolean(GEMINI_API_KEY),
-      groq: Boolean(GROQ_API_KEY),
-      openrouter: Boolean(OPENROUTER_API_KEY),
-      nvidia: Boolean(NVIDIA_API_KEY),
-      codex: ENABLE_CODEX_PROVIDER,
-      mock: ENABLE_MOCK_FALLBACK
+      openai: activeProviders.has("openai") && Boolean(OPENAI_API_KEY),
+      gemini: activeProviders.has("gemini") && Boolean(GEMINI_API_KEY),
+      groq: activeProviders.has("groq") && Boolean(GROQ_API_KEY),
+      openrouter: activeProviders.has("openrouter") && Boolean(OPENROUTER_API_KEY),
+      nvidia: activeProviders.has("nvidia") && Boolean(NVIDIA_API_KEY),
+      codex: activeProviders.has("codex") && ENABLE_CODEX_PROVIDER,
+      mock: activeProviders.has("mock") && ENABLE_MOCK_FALLBACK
+    },
+    inactive_configured: {
+      openrouter: !activeProviders.has("openrouter") && Boolean(OPENROUTER_API_KEY),
+      nvidia: !activeProviders.has("nvidia") && Boolean(NVIDIA_API_KEY),
+      groq: !activeProviders.has("groq") && Boolean(GROQ_API_KEY),
+      openai: !activeProviders.has("openai") && Boolean(OPENAI_API_KEY)
     },
     models: {
-      openai: OPENAI_MODEL,
-      gemini: GEMINI_MODEL,
-      groq: GROQ_MODEL,
-      openrouter_models: OPENROUTER_MODELS,
-      nvidia: NVIDIA_MODEL,
-      codex: CODEX_MODEL,
-      mock: "mock"
+      openai: activeProviders.has("openai") ? OPENAI_MODEL : null,
+      gemini: activeProviders.has("gemini") ? GEMINI_MODEL : null,
+      groq: activeProviders.has("groq") ? GROQ_MODEL : null,
+      openrouter_models: activeProviders.has("openrouter") ? OPENROUTER_MODELS : [],
+      nvidia: activeProviders.has("nvidia") ? NVIDIA_MODEL : null,
+      codex: activeProviders.has("codex") ? CODEX_MODEL : null,
+      mock: activeProviders.has("mock") ? "mock" : null
     },
     codex: {
       backend: CODEX_BACKEND,

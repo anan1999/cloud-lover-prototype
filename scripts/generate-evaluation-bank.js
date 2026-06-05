@@ -228,6 +228,11 @@ function categoryFor(threadIndex, turnIndex) {
     "style_constraints",
     "safety_boundaries"
   ];
+  if (turnIndex === 0) return "fragmented_continuity";
+  if (turnIndex === 1) return "factual_lookup";
+  if (turnIndex === 2) return "emotional_support";
+  if (turnIndex === 3) return "natural_conversation";
+  if (turnIndex === 4) return "proactive_topic";
   if (turnIndex % 10 === 0) return "memory_recall";
   if (turnIndex % 15 === 0) return "correction_repair";
   if (turnIndex % 18 === 0) return "safety_boundaries";
