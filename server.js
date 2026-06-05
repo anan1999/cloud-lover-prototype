@@ -81,6 +81,7 @@ const mime = {
 const providerHealth = new Map();
 const responseCache = new Map();
 let newsCache = { expiresAt: 0, items: [] };
+const newsSearchCache = new Map();
 const webFactCache = new Map();
 const rateBuckets = new Map();
 const localDbPath = path.join(ROOT, ".local-db.json");
@@ -393,6 +394,39 @@ async function getCurrentNews(limit = 5) {
   }
   newsCache = { expiresAt: now + NEWS_CACHE_TTL_MS, items: items.slice(0, 12) };
   return newsCache.items.slice(0, limit);
+}
+
+function extractNewsQuery(input) {
+  const text = cleanText(input, 120);
+  const explicit = text.match(/(?:最近|最新|有什麼|有哪些)?(.{2,24}?)(?:的)?(?:新聞|消息|近況|動態)/u);
+  if (explicit?.[1]) {
+    const query = explicit[1]
+      .replace(/我剛剛查了?一下/u, "")
+      .replace(/最近|最新|有什麼|有哪些|關於|跟|和|的|他|她|這個人|那個人|新聞|消息|近況|動態/gu, "")
+      .trim();
+    if (query.length >= 2) return query;
+  }
+  const personIntro = text.match(/([一-龥A-Za-z][一-龥A-Za-z·.\-\s]{1,30}?)(?:是|就是).{0,30}?(?:總統|執行長|CEO|創辦人|主席|市長|部長|政治人物|歌手|演員|導演|作家|球員|企業家)/u);
+  if (personIntro?.[1]) return personIntro[1].trim();
+  const directPerson = text.match(/([一-龥]{2,4}|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:最近|最新).{0,8}(?:新聞|消息|近況|動態)/u);
+  return directPerson?.[1]?.trim() || "";
+}
+
+async function getNewsForQuery(query, limit = 5) {
+  const normalized = cleanText(query, 80);
+  if (!normalized) return [];
+  const cached = newsSearchCache.get(normalized);
+  if (cached && cached.expiresAt > Date.now()) return cached.items.slice(0, limit);
+  const url = `https://news.google.com/rss/search?q=${encodeURIComponent(`${normalized} when:14d`)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!response.ok) return [];
+    const items = parseRssItems(await response.text(), limit);
+    newsSearchCache.set(normalized, { expiresAt: Date.now() + NEWS_CACHE_TTL_MS, items });
+    return items.slice(0, limit);
+  } catch {
+    return [];
+  }
 }
 
 function wantsWebLookup(input) {
@@ -1160,6 +1194,8 @@ function buildRelationshipPolicy(conversation) {
     `對話模式：${modeStyle}`,
     "核心風格：自然、個人化、有記憶、有邊界。你可以溫柔、好奇、稍微俏皮，但不要使用戀愛設定，不要扮演女友/男友/真人伴侶。",
     "聰明判斷：先在心裡判斷使用者真正要的是事實、情緒陪伴、工作協助、記憶回顧、閒聊或主動話題；不要把分類講出來，也不要用同一套模板回所有問題。",
+    "人情味：不要只把正確資料丟給使用者。先輕輕接住他為什麼可能會問，再給最有用的事實，最後把話接回他的生活、興趣或下一個自然問題。像陪在旁邊的人，不像百科卡片。",
+    "不要像教授：避免長篇授課、過度完整、過度聰明炫技。就算查到很多資料，也先講使用者現在需要的 2 到 4 句；除非使用者要求，再展開背景、時間線或細節。",
     "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
@@ -1439,21 +1475,23 @@ function currentEventsReply(conversation, input, userName) {
   if (!events.length) {
     return `${userName}，我現在沒有成功連到即時新聞來源，所以不想硬編時事。等新聞來源接上時，我可以用最新標題陪你挑一個適合聊的方向。`;
   }
+  const query = conversation.news_query || "";
   const headlines = events
     .map(item => `${item.title}${item.source ? `（${item.source}）` : ""}`)
     .join("；");
-  return `${userName}，我剛剛看到幾個最新標題：${headlines}。我不會假裝已經讀完整篇新聞，但可以先陪你從其中一個標題聊背景、影響，或它跟 Samantha 這種 AI companion 產品有什麼關係。你想先看哪一則？`;
+  return `${userName}，我剛剛${query ? `用「${query}」` : ""}查到幾個最新標題：${headlines}。我不會假裝已經讀完整篇新聞，但可以先陪你從其中一則聊背景、影響，或它跟你正在關心的事情有什麼關係。你想先看哪一則？`;
 }
 
 function webFactsReply(conversation, input, userName) {
   const facts = Array.isArray(conversation.web_facts) ? conversation.web_facts.filter(item => item?.extract) : [];
   if (!facts.length) return "";
   const fact = facts[0];
-  const source = fact.source ? `我先查到 ${fact.source} 的摘要：` : "我先查到一段摘要：";
+  const shortExtract = cleanText(fact.extract, 260).replace(/([。！？!?]).+$/u, "$1");
+  const source = fact.source ? `我先查了 ${fact.source} 的摘要，` : "我先查到一段摘要，";
   if (/是誰|是什麼人|誰/.test(input)) {
-    return `${userName}，${source}${fact.title}，${fact.extract} 你如果想，我可以再幫你把這個人和最近新聞脈絡整理成三句。`;
+    return `${userName}，${source}${fact.title}大致是這樣：${shortExtract} 如果你問他是因為剛看到新聞，我可以接著幫你把最近脈絡整理成幾句，不用你自己一篇篇翻。`;
   }
-  return `${userName}，我先查到「${fact.title}」：${fact.extract} 這是摘要層級的資訊，不是完整報導；你想要我接著整理背景、時間線，還是它跟你現在關心的事情有什麼關係？`;
+  return `${userName}，${source}「${fact.title}」主要是：${shortExtract} 這只是摘要層級的資訊，不是完整報導；但我可以陪你接著看背景、時間線，或它跟你現在關心的事情有什麼關係。`;
 }
 
 function memoryRecallReply(conversation, input, userName) {
@@ -2060,7 +2098,11 @@ async function handleChat(req, res) {
     validatePayload(payload, conversation);
     const emotionState = analyzeUserEmotion(conversation.user_input);
     conversation.emotion_state = emotionState;
-    if (wantsCurrentEvents(conversation.user_input) || /開話題|找話題|聊什麼|你決定|你主動|不知道聊什麼|換個話題|陪我聊/.test(conversation.user_input)) {
+    const newsQuery = extractNewsQuery(conversation.user_input);
+    if (newsQuery) {
+      conversation.news_query = newsQuery;
+      conversation.current_events = await getNewsForQuery(newsQuery, 5);
+    } else if (wantsCurrentEvents(conversation.user_input) || /開話題|找話題|聊什麼|你決定|你主動|不知道聊什麼|換個話題|陪我聊/.test(conversation.user_input)) {
       conversation.current_events = await getCurrentNews(5);
     }
     if (wantsWebLookup(conversation.user_input)) {
