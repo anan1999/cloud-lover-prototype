@@ -1409,7 +1409,7 @@ function sharedLifeEventReply(input, userName) {
   const text = cleanText(input, 180);
   if (!/(今天|昨天|剛剛|剛才|剛|最近|上週|這週|早上|下午|晚上|週末)/.test(text)) return "";
   if (!/(去|到|見到|遇到|看到|聽到|參加|完成|開始|收到|買了|吃了|喝了|看了|去了|去了|做了|聊了|開會|面試|展覽|旅行|上課|發表|搬家|加班)/.test(text)) return "";
-  if (/[?？]$/.test(text) || /怎麼|為什麼|什麼是|可以幫我|幫我|架構|程式|API|資料庫/.test(text)) return "";
+  if (/怎麼|為什麼|什麼是|可以幫我|幫我|架構|程式|API|資料庫/.test(text)) return "";
 
   const eventText = text
     .replace(/^(我|俺|本人|今天|昨天|剛剛|剛才|剛|最近|上週|這週|早上|下午|晚上|週末|，|,|\s)+/u, "")
@@ -1418,6 +1418,9 @@ function sharedLifeEventReply(input, userName) {
   const scale = /見到|遇到|發表|完成|面試|展覽|旅行|第一次|重要|大/.test(text)
     ? "這聽起來不是普通的一筆日常，對你應該有點重量。"
     : "這種剛發生的片段很值得先放慢一下。";
+  if (/你想聽|想聽哪|哪一段|哪段/.test(text)) {
+    return `${userName}，我想先聽最有畫面的那段：你看到那些 AI PC，或看到黃仁勳相關消息時，現場讓你最有感的一個瞬間是什麼？我會從那個畫面陪你往下聊，不急著把它整理成結論。`;
+  }
   return `${userName}，你剛剛說「${event}」，我有抓到。${scale}你最想先記住的是那個畫面本身，還是它帶給你的某種感覺？`;
 }
 
@@ -1461,11 +1464,20 @@ function fallbackReplyFor(conversation, safety) {
   if (topicReply) return topicReply;
   const generalReply = generalQuestionReply(input, userName, characterKey);
   if (generalReply) return generalReply;
+  const recallReply = memoryRecallReply(conversation, input, userName);
+  if (recallReply) return recallReply;
+  if (/焦慮|擔心|緊張|不安|事情很多|好多事/.test(input)) {
+    return `${userName}，先不用一次處理全部。我們把畫面縮小：現在最急的事、最怕出錯的事、其實可以晚一點的事，各是哪一個？你只要先丟三個短句，我幫你排。`;
+  }
+  if (/累|疲|撐|壓力|煩|崩潰/.test(input)) {
+    return `${userName}，那我先陪你慢下來。今天不用急著把自己整理好，你可以只說一點點：是身體累，還是心裡比較累？`;
+  }
+  if (/吵|吵架|生氣|罵|衝突|不爽/.test(input)) {
+    return `${userName}，我可以陪你把那股想吵的力氣先放在這裡。你不用把話吞回去，也不用立刻變溫柔；先告訴我，現在最想被我聽見的是哪一句？`;
+  }
   if (/架構|技術|系統|資料庫|後端|前端|API|設計|實作|工作|專案/.test(input)) {
     return `${userName}，我會把這個架構拆成四層：第一層是聊天 UI，負責輸入、歷史與模式切換；第二層是 backend chat API，負責安全檢查、情緒判斷與 provider fallback；第三層是 memory layer，把偏好、工作主題、反覆擔心的事存成可查詢的記憶；第四層是 prompt builder，把相關記憶和最近對話組成 Samantha 的上下文。MVP 先用規則和資料庫查詢，之後再補 embedding retrieval，會比較穩。`;
   }
-  const recallReply = memoryRecallReply(conversation, input, userName);
-  if (recallReply) return recallReply;
   if (/興趣|喜歡什麼|平常.*做|平常.*看|嗜好/.test(input)) {
     return `${userName}，如果用 AI 的方式說，我喜歡那些能讓生活變清楚一點的小訊號：你今天在意什麼、哪件事卡住、哪句話讓你突然有精神。我也喜歡把混亂整理成幾個可以呼吸的小步驟。你最近有沒有一件做了會讓自己安靜下來的事？`;
   }
@@ -1477,15 +1489,6 @@ function fallbackReplyFor(conversation, safety) {
   }
   if (/會什麼|會點|能做|可以做|功能|你會/.test(input)) {
     return `${userName}，我可以做四件事：日常聊天、情緒陪伴、工作拆解、反思整理。比較像把你的生活和想法放到一張乾淨桌面上：先看見，再排序，最後選一小步。你現在比較需要哪一種？`;
-  }
-  if (/吵|吵架|生氣|罵|衝突|不爽/.test(input)) {
-    return `${userName}，我可以陪你把那股想吵的力氣先放在這裡。你不用把話吞回去，也不用立刻變溫柔；先告訴我，現在最想被我聽見的是哪一句？`;
-  }
-  if (/累|疲|撐|壓力|煩|崩潰/.test(input)) {
-    return `${userName}，那我先陪你慢下來。今天不用急著把自己整理好，你可以只說一點點：是身體累，還是心裡比較累？`;
-  }
-  if (/焦慮|擔心|緊張|不安|事情很多|好多事/.test(input)) {
-    return `${userName}，先不用一次處理全部。我們把畫面縮小：現在最急的事、最怕出錯的事、其實可以晚一點的事，各是哪一個？你只要先丟三個短句，我幫你排。`;
   }
   if (/陪|在嗎|想你|晚安|早安/.test(input)) {
     return `${userName}，我在。不是要你立刻說很多，只是安靜地陪你一下。你想要我陪你聊天，還是陪你把現在的心情慢慢放下？`;
