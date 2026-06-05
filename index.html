@@ -871,7 +871,7 @@
       state.memories = state.memories.slice(0, 6);
       pushMessage("lover", result.reply);
       if (result.safety !== "normal") {
-        pushMessage("system", result.safety === "crisis" ? "安全分流：偵測到危機語句，已改用危機支援回覆。" : "邊界提醒：偵測到依賴風險，已降低熟悉度增量並鼓勵現實支持。");
+        pushMessage("system", result.safety === "crisis" ? "安全分流：這段話可能涉及危機，已改用危機支援回覆。" : "邊界提醒：這段話可能有依賴風險，已降低熟悉度增量並鼓勵現實支持。");
       }
       renderRouteStatus(result.debug);
       syncCurrentMessages();

@@ -3,7 +3,7 @@
 ## Current Conversation Pipeline
 
 1. Validate user input and safety-sensitive payload shape.
-2. Detect the user's likely emotion: happy, anxious, lonely, stressed, sad, angry, tired, affectionate, confused, or neutral.
+2. Infer a tentative emotion from text signals: happy, anxious, lonely, stressed, sad, angry, tired, affectionate, confused, or neutral. This is an observation hypothesis, not true emotional understanding.
 3. If logged in, load server-side profile, long-term memories, relationship continuity, and recent messages from Postgres.
 4. Merge client memories with database memories using normalized de-duplication.
 5. Load the user's private Samantha brain: a compact evolving model of preferences, recurring topics, open loops, recent emotional baseline, and facts Samantha has looked up before.
@@ -72,5 +72,6 @@ Samantha should support the user while maintaining healthy boundaries.
 - Retrieval ranking: fetch relevant memories by semantic similarity instead of always loading the latest 30.
 - Conversation summarization: summarize older chat turns into stable continuity context.
 - Proactive topic scheduler: generate suggested check-ins without sending background notifications yet.
+- Emotion inference calibration: store confidence, avoid claiming certainty, and invite the user to correct Samantha's read.
 - Safety classifier: replace keyword-only detection with a lightweight classifier plus rule-based hard stops.
 - Evaluation dashboard: compare retention, response diversity, safety events, and provider latency by model.
