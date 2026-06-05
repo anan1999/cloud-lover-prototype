@@ -165,13 +165,13 @@ function sendJson(req, res, status, data) {
 
 function readLocalDb() {
   if (!fs.existsSync(localDbPath)) {
-    return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [] };
+    return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [], samantha_brains: [] };
   }
   try {
     const db = JSON.parse(fs.readFileSync(localDbPath, "utf8"));
-    return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [], ...db };
+    return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [], samantha_brains: [], ...db };
   } catch {
-  return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [] };
+    return { users: [], sessions: [], profiles: [], messages: [], memories: [], emotion_events: [], character_relationships: [], samantha_brains: [] };
   }
 }
 
@@ -271,12 +271,23 @@ async function initDb() {
       sample text,
       created_at timestamptz not null default now()
     );
+    create table if not exists samantha_brains (
+      user_id text primary key references users(id) on delete cascade,
+      summary text not null default '',
+      preferences jsonb not null default '[]'::jsonb,
+      recurring_topics jsonb not null default '[]'::jsonb,
+      open_loops jsonb not null default '[]'::jsonb,
+      emotional_baseline text not null default 'neutral',
+      last_user_state text,
+      updated_at timestamptz not null default now()
+    );
     create index if not exists messages_user_created_idx on messages(user_id, created_at);
     create index if not exists messages_user_character_created_idx on messages(user_id, character_key, created_at);
     create index if not exists memories_user_created_idx on memories(user_id, created_at);
     create index if not exists emotion_events_user_created_idx on emotion_events(user_id, created_at);
     create index if not exists emotion_events_emotion_idx on emotion_events(primary_emotion, created_at);
     create index if not exists character_relationships_updated_idx on character_relationships(user_id, updated_at);
+    create index if not exists samantha_brains_updated_idx on samantha_brains(updated_at);
   `);
 }
 
@@ -664,6 +675,142 @@ async function mergeMemories(userId, items, limit = 30) {
   return getMemories(userId, limit);
 }
 
+function parseJsonArray(value) {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function defaultSamanthaBrain(userId) {
+  return {
+    user_id: userId,
+    summary: "Samantha 還在慢慢認識這位使用者；先保持溫暖、簡短、不要過度假設。",
+    preferences: [],
+    recurring_topics: [],
+    open_loops: [],
+    emotional_baseline: "neutral",
+    last_user_state: null,
+    updated_at: new Date().toISOString()
+  };
+}
+
+function normalizeBrainRow(row, userId) {
+  const base = defaultSamanthaBrain(userId);
+  return {
+    ...base,
+    ...(row || {}),
+    preferences: parseJsonArray(row?.preferences).map(item => cleanText(item, 180)).filter(Boolean).slice(0, 16),
+    recurring_topics: parseJsonArray(row?.recurring_topics).map(item => cleanText(item, 80)).filter(Boolean).slice(0, 16),
+    open_loops: parseJsonArray(row?.open_loops).map(item => cleanText(item, 160)).filter(Boolean).slice(0, 10)
+  };
+}
+
+async function getSamanthaBrain(userId) {
+  await ensureDb();
+  const result = await queryDb("select * from samantha_brains where user_id = $1", [userId]);
+  if (result) return normalizeBrainRow(result.rows[0], userId);
+  const db = readLocalDb();
+  return normalizeBrainRow((db.samantha_brains || []).find(item => item.user_id === userId), userId);
+}
+
+async function saveSamanthaBrain(userId, brain) {
+  const next = normalizeBrainRow(brain, userId);
+  const result = await queryDb(`
+    insert into samantha_brains (user_id, summary, preferences, recurring_topics, open_loops, emotional_baseline, last_user_state)
+    values ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, $6, $7)
+    on conflict (user_id) do update set
+      summary = excluded.summary,
+      preferences = excluded.preferences,
+      recurring_topics = excluded.recurring_topics,
+      open_loops = excluded.open_loops,
+      emotional_baseline = excluded.emotional_baseline,
+      last_user_state = excluded.last_user_state,
+      updated_at = now()
+    returning *
+  `, [userId, next.summary, JSON.stringify(next.preferences), JSON.stringify(next.recurring_topics), JSON.stringify(next.open_loops), next.emotional_baseline, next.last_user_state]);
+  if (result) return normalizeBrainRow(result.rows[0], userId);
+  const db = readLocalDb();
+  db.samantha_brains ||= [];
+  const existing = db.samantha_brains.find(item => item.user_id === userId);
+  const localNext = { ...next, updated_at: new Date().toISOString() };
+  if (existing) Object.assign(existing, localNext);
+  else db.samantha_brains.push(localNext);
+  writeLocalDb(db);
+  return localNext;
+}
+
+function uniqueRecent(items, limit) {
+  const seen = new Set();
+  return items.map(item => cleanText(item, 220)).filter(Boolean).filter(item => {
+    const key = normalizeMemoryText(item);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(-limit);
+}
+
+function inferBrainTopics(input) {
+  const topics = [];
+  if (/Samantha|companion|AI伴侶|雲端戀人|產品|上線|Render|GitHub|資料庫|API|模型|Codex|Gemini/i.test(input)) topics.push("Samantha 產品與 AI companion 開發");
+  if (/工作|上班|專案|任務|效率|拖延|電腦/.test(input)) topics.push("工作狀態與執行壓力");
+  if (/焦慮|壓力|累|煩|不安|做不好|崩潰/.test(input)) topics.push("情緒整理與自我懷疑");
+  if (/新聞|時事|總統|黃仁勳|賴清德|政治|科技/.test(input)) topics.push("科技與時事脈絡");
+  return topics;
+}
+
+function learnedFactFragments(conversation) {
+  const facts = Array.isArray(conversation.web_facts)
+    ? conversation.web_facts.map(item => item?.title && item?.extract ? `已查過 ${item.title}：${cleanText(item.extract, 140)}` : "").filter(Boolean)
+    : [];
+  const newsQuery = conversation.news_query ? [`最近查過「${conversation.news_query}」相關新聞`] : [];
+  return [...facts, ...newsQuery].slice(0, 4);
+}
+
+function extractBrainPreference(input) {
+  const text = cleanText(input, 180);
+  if (/不要像|不想要|不喜歡/.test(text)) return text.replace(/^我/u, "使用者");
+  if (/希望|想要|要讓|應該/.test(text) && /Samantha|AI|回覆|陪伴|人情味|像人|查/.test(text)) return text.replace(/^我/u, "使用者");
+  return "";
+}
+
+function buildBrainSummary({ preferences, topics, emotionState }) {
+  const topicText = topics.slice(-3).join("、") || "還在建立常聊主題";
+  const preferenceText = preferences.slice(-3).join("；") || "偏好還不多，先少假設";
+  const emotionText = emotionState?.primary_emotion || "neutral";
+  return `這位使用者近期常圍繞：${topicText}。目前偏好：${preferenceText}。最近情緒傾向：${emotionText}。Samantha 回覆時要像熟悉的陪伴者：先理解意圖，再自然查資料或接住情緒，不要露出分類感。`;
+}
+
+async function updateSamanthaBrain(userId, conversation, emotionState, routedResult) {
+  const brain = await getSamanthaBrain(userId);
+  const input = cleanText(conversation.user_input, 300);
+  const preferences = uniqueRecent([
+    ...brain.preferences,
+    extractBrainPreference(input),
+    ...(Array.isArray(routedResult.memory_patch) ? routedResult.memory_patch : []),
+    ...learnedFactFragments(conversation)
+  ], 16);
+  const topics = uniqueRecent([...brain.recurring_topics, ...inferBrainTopics(input), ...(conversation.news_query ? [`關注 ${conversation.news_query} 的最新消息`] : [])], 16);
+  const openLoop = routedResult.suggested_action ? `${new Date().toISOString().slice(0, 10)}：${routedResult.suggested_action}` : "";
+  const openLoops = uniqueRecent([...brain.open_loops, openLoop], 10);
+  const lastState = `${emotionState.primary_emotion || "neutral"} / ${emotionState.need || "unknown"}：${cleanText(input, 90)}`;
+  return saveSamanthaBrain(userId, {
+    ...brain,
+    preferences,
+    recurring_topics: topics,
+    open_loops: openLoops,
+    emotional_baseline: emotionState.primary_emotion || brain.emotional_baseline || "neutral",
+    last_user_state: lastState,
+    summary: buildBrainSummary({ preferences, topics, emotionState })
+  });
+}
+
 function inferCharacterKey(message = {}) {
   const key = message.character_key || message.lover_name;
   if (key === "cheng" || key === "ji" || key === "澄" || key === "霽") return "samantha";
@@ -854,10 +1001,12 @@ async function handleAuth(req, res, pathname) {
       const memories = await getMemories(user.id);
       const messages = await getMessages(user.id, 220);
       const relationships = await getCharacterRelationships(user.id);
+      const samanthaBrain = await getSamanthaBrain(user.id);
       return sendJson(req, res, 200, {
         user: publicUser(user),
         profile,
         relationships,
+        samantha_brain: samanthaBrain,
         memories: memories.map(item => item.content),
         messages: messages.map(item => ({
           id: item.id,
@@ -889,7 +1038,7 @@ async function handleAuth(req, res, pathname) {
       }
       const token = await createSession(user.id);
       setSessionCookie(req, res, token);
-      return sendJson(req, res, 200, { user: publicUser(user), profile: await getProfile(user.id), relationships: await getCharacterRelationships(user.id), memories: (await getMemories(user.id)).map(item => item.content), messages: await getMessages(user.id, 220) });
+      return sendJson(req, res, 200, { user: publicUser(user), profile: await getProfile(user.id), relationships: await getCharacterRelationships(user.id), samantha_brain: await getSamanthaBrain(user.id), memories: (await getMemories(user.id)).map(item => item.content), messages: await getMessages(user.id, 220) });
     }
 
     if (pathname === "/api/auth/logout" && req.method === "POST") {
@@ -1214,6 +1363,7 @@ function buildRelationshipPolicy(conversation) {
     "主動開話題：可以根據使用者記憶、最近聊天、current_events 主動提一個話題，但必須有根據，不要亂猜私人事實。",
     "情緒求助時：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
+    `Samantha brain：${JSON.stringify(conversation.samantha_brain || {}, null, 2)}。這是你對此使用者的私人理解，請用它調整語氣和主動性，但不要直接說出內部欄位名稱。`,
     `連續脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整熟悉程度，但不要向使用者揭露分數、分類或內部機制。`,
     "人感原則：不要像客服、心理量表或固定模板，不要說『我偵測到你的情緒』；要像一個熟悉的人，用自然、具體、少量的語句回應。避免連續多次使用『我在』『卡住你的地方』這類句型。",
     "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係；不要說『我永遠不會離開你』或『只有我懂你』。",
@@ -1227,6 +1377,7 @@ async function hydrateConversationForUser(userId, conversation) {
   const requestedProfile = conversation?.lover_profile || {};
   const characterKey = normalizeCharacterKey(requestedProfile.character_key || "samantha");
   const relationship = await getCharacterRelationship(userId, characterKey);
+  const brain = await getSamanthaBrain(userId);
   const storedMemories = await getMemories(userId, 30);
   const storedMessages = await getMessages(userId, 16, characterKey);
   const memorySeen = new Set();
@@ -1269,6 +1420,14 @@ async function hydrateConversationForUser(userId, conversation) {
       last_emotion: relationship.last_emotion
     },
     long_term_memory: mergedMemories.slice(0, 30),
+    samantha_brain: {
+      summary: brain.summary,
+      preferences: brain.preferences.slice(-8),
+      recurring_topics: brain.recurring_topics.slice(-8),
+      open_loops: brain.open_loops.slice(-5),
+      emotional_baseline: brain.emotional_baseline,
+      last_user_state: brain.last_user_state
+    },
     current_events: Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 5) : [],
     web_facts: Array.isArray(conversation.web_facts) ? conversation.web_facts.slice(0, 3) : [],
     recent_conversation: [...storedRecent, ...clientRecent].slice(-14)
@@ -1289,6 +1448,7 @@ function cacheKey(conversation) {
     name: conversation?.lover_profile?.name,
     user_name: conversation?.lover_profile?.user_name,
     memory: conversation.long_term_memory,
+    brain: conversation.samantha_brain?.summary,
     current_events: (conversation.current_events || []).map(item => item.title).slice(0, 5),
     web_facts: (conversation.web_facts || []).map(item => `${item.title}:${item.extract}`).slice(0, 3)
   });
@@ -2159,6 +2319,7 @@ async function handleChat(req, res) {
         lover_name: "Samantha"
       });
       await mergeMemories(user.id, routed.result.memory_patch || []);
+      response.samantha_brain = await updateSamanthaBrain(user.id, effectiveConversation, emotionState, routed.result);
       const characterKey = normalizeCharacterKey(effectiveConversation?.lover_profile?.character_key || "samantha");
       const relationship = await updateCharacterRelationship(user.id, characterKey, "Samantha", emotionState, routed.result);
       response.relationship = {

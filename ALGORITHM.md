@@ -6,7 +6,8 @@
 2. Detect the user's likely emotion: happy, anxious, lonely, stressed, sad, angry, tired, affectionate, confused, or neutral.
 3. If logged in, load server-side profile, long-term memories, relationship continuity, and recent messages from Postgres.
 4. Merge client memories with database memories using normalized de-duplication.
-5. Hydrate the LLM prompt with:
+5. Load the user's private Samantha brain: a compact evolving model of preferences, recurring topics, open loops, recent emotional baseline, and facts Samantha has looked up before.
+6. Hydrate the LLM prompt with:
    - current user input
    - Samantha companion profile
    - conversation mode
@@ -15,19 +16,19 @@
    - recent database conversation
    - current news headlines when relevant
    - web facts from a free lookup source when the user asks factual questions such as "who is X?"
-6. Route across providers in order:
+7. Route across providers in order:
 
 ```text
 Gemini -> Codex -> Mock
 ```
 
-7. Give Gemini a short fast-path timeout so normal replies stay quick. If Gemini fails or times out, use Codex fallback through the configured backend:
+8. Give Gemini a short fast-path timeout so normal replies stay quick. If Gemini fails or times out, use Codex fallback through the configured backend:
    - `api`: direct OpenAI Responses API, preferred for fast production fallback.
    - `worker`: an optional always-warm service that can hold its own model connection.
    - `cli`: local Codex CLI fallback, useful for development but slower because every request starts a process.
    Codex can wait up to one minute. If Gemini and Codex both fail fast, wait until `MOCK_FALLBACK_DELAY_MS` has elapsed before using mock, so mock never appears instantly as if it were the real model.
-8. Normalize model output into the product contract.
-9. Store user message, AI reply, safety label, emotion, provider, memory patches, and relationship continuity.
+9. Normalize model output into the product contract.
+10. Store user message, AI reply, safety label, emotion, provider, memory patches, relationship continuity, and updated Samantha brain.
 
 ## Companion Model
 
