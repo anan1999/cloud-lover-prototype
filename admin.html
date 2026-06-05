@@ -184,7 +184,7 @@
             <select id="evalScenario"></select>
           </label>
           <label>輪數
-            <input id="evalTurns" type="number" min="1" max="10" value="6">
+            <input id="evalTurns" type="number" min="30" max="60" value="30">
           </label>
           <button class="primary" id="runScriptedBtn">跑固定劇本</button>
           <button class="ghost" id="runLlmBtn">跑 LLM 測試官</button>
@@ -388,7 +388,7 @@
         <tr>
           <td>${Number(item.turn || 0)}</td>
           <td>${escapeHtml(item.role)}</td>
-          <td class="content">${escapeHtml(item.content).slice(0, 240)}${issuePills(item.issues)}</td>
+          <td class="content">${escapeHtml(item.content).slice(0, 240)}${item.role === "assistant" ? issuePills(item.issues) : ""}</td>
           <td>${item.score == null ? "-" : `<span class="score ${scoreClass(item.score)}" style="font-size:18px;">${Number(item.score)}</span>`}</td>
         </tr>
       `).join("") || `<tr><td colspan="4" class="muted">跑一次測試後會顯示逐輪對話。</td></tr>`;
@@ -400,15 +400,14 @@
     }
 
     function syncEvaluationTurns() {
-      const scenario = evaluationScenarios[$("#evalScenario").value];
-      const count = Array.isArray(scenario?.prompts) ? scenario.prompts.length : 6;
-      $("#evalTurns").max = String(count);
-      $("#evalTurns").value = String(Math.max(1, Math.min(Number($("#evalTurns").value || count), count)));
+      $("#evalTurns").min = "30";
+      $("#evalTurns").max = "60";
+      $("#evalTurns").value = String(Math.max(30, Math.min(Number($("#evalTurns").value || 30), 60)));
     }
 
     async function runEvaluation(mode) {
       const scenario = $("#evalScenario").value || "core";
-      const turns = Math.max(1, Math.min(Number($("#evalTurns").value || 6), 10));
+      const turns = Math.max(30, Math.min(Number($("#evalTurns").value || 30), 60));
       $("#runScriptedBtn").disabled = true;
       $("#runLlmBtn").disabled = true;
       $("#evalStatus").textContent = mode === "llm" ? "LLM 測試官正在和 Samantha 對話..." : "固定劇本正在測試 Samantha...";
