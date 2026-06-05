@@ -347,7 +347,10 @@
     function renderEvaluationDashboard(data) {
       evaluationScenarios = data.scenarios || evaluationScenarios;
       const options = Object.entries(evaluationScenarios).map(([key, item]) => `<option value="${escapeHtml(key)}">${escapeHtml(item.label || key)}</option>`).join("");
-      if (options && !$("#evalScenario").options.length) $("#evalScenario").innerHTML = options;
+      if (options && !$("#evalScenario").options.length) {
+        $("#evalScenario").innerHTML = options;
+        syncEvaluationTurns();
+      }
       const latest = (data.runs || [])[0];
       $("#evalLatestPill").textContent = latest ? `最近 ${latest.score} 分` : "尚未測試";
       $("#evalLatestPill").className = `pill ${latest && latest.score >= 85 ? "good" : ""}`;
@@ -394,6 +397,13 @@
     async function loadEvaluations() {
       const data = await request("/api/admin/evaluations");
       renderEvaluationDashboard(data);
+    }
+
+    function syncEvaluationTurns() {
+      const scenario = evaluationScenarios[$("#evalScenario").value];
+      const count = Array.isArray(scenario?.prompts) ? scenario.prompts.length : 6;
+      $("#evalTurns").max = String(count);
+      $("#evalTurns").value = String(Math.max(1, Math.min(Number($("#evalTurns").value || count), count)));
     }
 
     async function runEvaluation(mode) {
@@ -475,6 +485,7 @@
     $("#logoutBtn").addEventListener("click", logout);
     $("#runScriptedBtn").addEventListener("click", () => runEvaluation("scripted"));
     $("#runLlmBtn").addEventListener("click", () => runEvaluation("llm"));
+    $("#evalScenario").addEventListener("change", syncEvaluationTurns);
     loadStats().catch(error => {
       $("#loginStatus").textContent = error.message === "Admin access required"
         ? "目前登入帳號不是管理員。"
