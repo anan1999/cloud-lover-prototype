@@ -360,6 +360,10 @@ function cleanText(value, max = 500) {
   return String(value || "").trim().slice(0, max);
 }
 
+function escapeRegExp(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function decodeHtmlEntities(text) {
   return String(text || "")
     .replace(/<!\[CDATA\[(.*?)\]\]>/gs, "$1")
@@ -450,19 +454,192 @@ async function getNewsForQuery(query, limit = 5) {
 }
 
 function wantsWebLookup(input) {
-  return /是誰|是什麼人|你知道.*嗎|查一下|搜尋|最新|目前|現在|哪一年|什麼時候|誰是|誰/.test(String(input || ""));
+  const text = String(input || "");
+  const compact = text.replace(/[？?\s]/g, "");
+  if (/^(AI是什麼|什麼是AI|人工智慧是什麼|什麼是人工智慧|你知道AI嗎)$/i.test(compact)) return false;
+  if (/愛是什麼|幸福是什麼|人生是什麼|孤單是什麼|你是什麼/.test(text)) return false;
+  if (/你知道我/.test(text) && !/(是什麼|是誰|新聞|查一下|搜尋|去|去了|到|參加|逛)/.test(text)) return false;
+  if (/是誰|是什麼人|你知道.*嗎|查一下|搜尋|最新|目前|現在|哪一年|什麼時候|誰是|誰/.test(text)) return true;
+  if (/什麼是|是什麼|何謂/.test(text) && /[A-Za-z0-9]{2,}|[一-龥]{2,}/u.test(text)) return true;
+  if (/(?:去|去了|到|參加|逛)\s*[A-Za-z0-9][A-Za-z0-9\s._-]{1,50}/i.test(text) && /你知道|是什麼|那是|這是/.test(text)) return true;
+  return false;
 }
 
 function extractLookupQuery(input) {
   const text = cleanText(input, 120);
+  const quoted = text.match(/[「『"']([^」』"']{2,60})[」』"']/u);
   const knowMatch = text.match(/你知道(.{2,40}?)(?:是什麼|是誰)?嗎/u);
-  const raw = knowMatch?.[1] || text;
+  const eventContext = text.match(/(?:去|去了|到|參加|逛|看)\s*([A-Za-z0-9][A-Za-z0-9\s._-]{1,50}|[一-龥A-Za-z0-9][一-龥A-Za-z0-9·._\-\s]{1,35}?)(?:玩|展|活動|論壇|演講|嗎|，|,|\s|$)/iu);
+  const whatPrefix = text.match(/(?:什麼是|何謂)\s*([A-Za-z0-9][A-Za-z0-9\s._-]{1,60}|[一-龥A-Za-z0-9][一-龥A-Za-z0-9·._\-\s]{1,35})/iu);
+  const suffixQuestion = text.match(/([A-Za-z0-9][A-Za-z0-9\s._-]{1,60}|[一-龥A-Za-z0-9][一-龥A-Za-z0-9·._\-\s]{1,35}?)(?:是誰|是什麼人|是什麼)/iu);
+  const newsQuestion = text.match(/(.{2,50}?)(?:最近|最新|目前|現在|有什麼|有哪些).{0,8}(?:新聞|消息|近況|動態)/u);
+  const raw = eventContext?.[1] || quoted?.[1] || knowMatch?.[1] || whatPrefix?.[1] || suffixQuestion?.[1] || newsQuestion?.[1] || text;
   return cleanText(raw, 80)
     .replace(/^(請|可以|幫我|你可以|麻煩你)?(先)?(查一下|搜尋一下|搜尋|查|告訴我|說說)?/u, "")
     .replace(/你知道/u, "")
+    .replace(/^什麼是/u, "")
     .replace(/^(我今天|今天|昨天|剛剛|剛才|剛|最近|去|去了|到)/u, "")
-    .replace(/你知道|那是|這是|是誰|是什麼人|是什麼|誰是|嗎|呢|玩|？|\?/gu, "")
+    .replace(/你知道|那是|這是|是誰|是什麼人|是什麼|誰是|何謂|嗎|呢|玩|新聞|消息|近況|動態|？|\?/gu, "")
     .trim();
+}
+
+function wantsLookupNews(input, query = "") {
+  const text = `${input || ""} ${query || ""}`;
+  return /最近|最新|新聞|消息|近況|動態|目前|現在|當今|today|news/i.test(text);
+}
+
+function shouldFetchLookupNews(input, query = "") {
+  if (wantsLookupNews(input, query)) return true;
+  if (/^[A-Za-z]{1,2}$/i.test(cleanText(query, 20))) return false;
+  return /[A-Z]{2,}|expo|conference|summit|forum|論壇|展覽|博覽會|展會/i.test(query);
+}
+
+function expandLookupQueries(query) {
+  const clean = cleanText(query, 80);
+  const expanded = [clean];
+  if (/^[A-Z]{2,}EXPO$/i.test(clean)) expanded.push(clean.replace(/expo$/i, " Expo"));
+  if (/^[A-Z]{2,}SUMMIT$/i.test(clean)) expanded.push(clean.replace(/summit$/i, " Summit"));
+  if (/^[A-Z]{2,}FORUM$/i.test(clean)) expanded.push(clean.replace(/forum$/i, " Forum"));
+  const spacedCamel = clean.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/\s+/g, " ").trim();
+  if (spacedCamel !== clean) expanded.push(spacedCamel);
+  return [...new Set(expanded.map(item => cleanText(item, 80)).filter(Boolean))];
+}
+
+function bestLookupSearchQuery(query) {
+  return expandLookupQueries(query)[1] || query;
+}
+
+function normalizeLookupTerm(value) {
+  return cleanText(value, 400).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function lookupTokens(value) {
+  return cleanText(value, 120)
+    .split(/[^\p{L}\p{N}]+/gu)
+    .map(token => token.trim().toLowerCase())
+    .filter(token => token.length >= 2);
+}
+
+function isRelevantFact(query, item) {
+  const normalizedQuery = normalizeLookupTerm(query);
+  const haystack = normalizeLookupTerm(`${item?.title || ""} ${item?.extract || ""}`);
+  if (!normalizedQuery || !haystack) return false;
+  if (haystack.includes(normalizedQuery)) return true;
+  const expanded = expandLookupQueries(query).map(normalizeLookupTerm).filter(Boolean);
+  if (expanded.some(term => haystack.includes(term))) return true;
+  const tokens = lookupTokens(query);
+  if (!tokens.length) return false;
+  const tokenHits = tokens.filter(token => haystack.includes(normalizeLookupTerm(token))).length;
+  return tokenHits >= Math.min(tokens.length, 2);
+}
+
+function isRelevantNewsItem(query, item) {
+  const title = cleanText(item?.title || "", 300);
+  if (!title) return false;
+  const titleNormalized = normalizeLookupTerm(title);
+  const expanded = expandLookupQueries(query);
+  if (expanded.some(candidate => titleNormalized.includes(normalizeLookupTerm(candidate)))) return true;
+  const tokens = lookupTokens(bestLookupSearchQuery(query));
+  if (!tokens.length) return false;
+  if (/expo|conference|summit|forum|論壇|展覽|博覽會|展會/i.test(query)) {
+    return tokens.every(token => titleNormalized.includes(normalizeLookupTerm(token)));
+  }
+  return isRelevantFact(query, { title, extract: item?.source || "" });
+}
+
+function filterLookupNews(query, items, limit = 5) {
+  const output = [];
+  const seen = new Set();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!isRelevantNewsItem(query, item)) continue;
+    const key = normalizeLookupTerm(item.title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
+function uniqueFactItems(items, limit = 4) {
+  const seen = new Set();
+  const output = [];
+  for (const item of items) {
+    if (!item?.title || !item?.extract) continue;
+    const key = `${item.source || ""}:${normalizeMemoryText(item.title)}:${normalizeMemoryText(item.extract).slice(0, 80)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(item);
+    if (output.length >= limit) break;
+  }
+  return output;
+}
+
+async function getWikipediaFacts(query, limit = 2) {
+  const searchUrl = `https://zh.wikipedia.org/w/api.php?action=opensearch&format=json&limit=${limit + 2}&namespace=0&search=${encodeURIComponent(query)}`;
+  const searchResponse = await fetch(searchUrl, { headers: { "User-Agent": "SamanthaCompanionMVP/0.1" }, signal: AbortSignal.timeout(5000) });
+  if (!searchResponse.ok) return [];
+  const searchData = await searchResponse.json();
+  const titles = [...new Set(Array.isArray(searchData?.[1]) ? searchData[1] : [])].slice(0, limit + 1);
+  const facts = [];
+  for (const title of titles) {
+    const summaryUrl = `https://zh.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+    const summaryResponse = await fetch(summaryUrl, { headers: { "User-Agent": "SamanthaCompanionMVP/0.1" }, signal: AbortSignal.timeout(5000) });
+    if (!summaryResponse.ok) continue;
+    const summary = await summaryResponse.json();
+    const extract = cleanText(summary.extract || "", 600);
+    if (!extract || summary.type === "disambiguation") continue;
+    facts.push({
+      query,
+      title: cleanText(summary.title || title, 120),
+      extract,
+      source: "Wikipedia",
+      url: summary.content_urls?.desktop?.page || `https://zh.wikipedia.org/wiki/${encodeURIComponent(title)}`
+    });
+    if (facts.length >= limit) break;
+  }
+  return facts;
+}
+
+async function getWikidataFacts(query, limit = 2) {
+  const facts = [];
+  for (const language of ["zh", "en"]) {
+    const url = `https://www.wikidata.org/w/api.php?action=wbsearchentities&format=json&limit=${limit}&language=${language}&uselang=zh-tw&search=${encodeURIComponent(query)}`;
+    const response = await fetch(url, { headers: { "User-Agent": "SamanthaCompanionMVP/0.1" }, signal: AbortSignal.timeout(4500) });
+    if (!response.ok) continue;
+    const data = await response.json();
+    for (const item of Array.isArray(data.search) ? data.search : []) {
+      const label = cleanText(item.label || "", 120);
+      const description = cleanText(item.description || "", 500);
+      if (!label || !description) continue;
+      facts.push({
+        query,
+        title: label,
+        extract: `${label}：${description}`,
+        source: "Wikidata",
+        url: item.concepturi || (item.id ? `https://www.wikidata.org/wiki/${item.id}` : "")
+      });
+      if (facts.length >= limit) return facts;
+    }
+  }
+  return facts;
+}
+
+async function getDuckDuckGoFacts(query) {
+  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+  const response = await fetch(url, { headers: { "User-Agent": "SamanthaCompanionMVP/0.1" }, signal: AbortSignal.timeout(4500) });
+  if (!response.ok) return [];
+  const data = await response.json();
+  const heading = cleanText(data.Heading || data.AbstractSource || query, 120);
+  const extract = cleanText(data.AbstractText || "", 600);
+  if (!heading || !extract) return [];
+  return [{
+    query,
+    title: heading,
+    extract,
+    source: data.AbstractSource || "DuckDuckGo",
+    url: data.AbstractURL || ""
+  }];
 }
 
 async function getWebFacts(input) {
@@ -471,24 +648,14 @@ async function getWebFacts(input) {
   const cached = webFactCache.get(query);
   if (cached && cached.expiresAt > Date.now()) return cached.items;
   try {
-    const searchUrl = `https://zh.wikipedia.org/w/api.php?action=opensearch&format=json&limit=1&namespace=0&search=${encodeURIComponent(query)}`;
-    const searchResponse = await fetch(searchUrl, { headers: { "User-Agent": "SamanthaCompanionMVP/0.1" }, signal: AbortSignal.timeout(5000) });
-    if (!searchResponse.ok) return [];
-    const searchData = await searchResponse.json();
-    const title = Array.isArray(searchData?.[1]) ? searchData[1][0] : "";
-    if (!title) return [];
-    const summaryUrl = `https://zh.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
-    const summaryResponse = await fetch(summaryUrl, { headers: { "User-Agent": "SamanthaCompanionMVP/0.1" }, signal: AbortSignal.timeout(5000) });
-    if (!summaryResponse.ok) return [];
-    const summary = await summaryResponse.json();
-    const item = {
-      query,
-      title: cleanText(summary.title || title, 120),
-      extract: cleanText(summary.extract || "", 600),
-      source: "Wikipedia",
-      url: summary.content_urls?.desktop?.page || `https://zh.wikipedia.org/wiki/${encodeURIComponent(title)}`
-    };
-    const items = item.extract ? [item] : [];
+    const candidates = expandLookupQueries(query);
+    const settled = await Promise.allSettled(candidates.flatMap(candidate => [
+      getWikipediaFacts(candidate, 2),
+      getDuckDuckGoFacts(candidate),
+      getWikidataFacts(candidate, 2)
+    ]));
+    const rawItems = settled.flatMap(result => result.status === "fulfilled" ? result.value : []);
+    const items = uniqueFactItems(rawItems.filter(item => isRelevantFact(query, item)), 4);
     webFactCache.set(query, { expiresAt: Date.now() + 60 * 60_000, items });
     return items;
   } catch {
@@ -770,11 +937,12 @@ function inferBrainTopics(input) {
 }
 
 function learnedFactFragments(conversation) {
+  const lookup = conversation.lookup_query ? [`這次正在查「${conversation.lookup_query}」`] : [];
   const facts = Array.isArray(conversation.web_facts)
     ? conversation.web_facts.map(item => item?.title && item?.extract ? `已查過 ${item.title}：${cleanText(item.extract, 140)}` : "").filter(Boolean)
     : [];
   const newsQuery = conversation.news_query ? [`最近查過「${conversation.news_query}」相關新聞`] : [];
-  return [...facts, ...newsQuery].slice(0, 4);
+  return [...lookup, ...facts, ...newsQuery].slice(0, 5);
 }
 
 function extractBrainPreference(input) {
@@ -1408,7 +1576,9 @@ function buildRelationshipPolicy(conversation) {
     "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
-    "查詢事實：如果 conversation.web_facts 有資料，必須優先根據 web_facts 回答，簡短說明來源，然後用自然語氣補一個與使用者脈絡有關的延伸。不要把人物問題回答成抽象概念。web_facts 沒有資料時才說不確定，不要硬編。",
+    "查詢事實：如果 conversation.lookup_query 有值，代表使用者正在問一個可查證的人名、活動、公司、技術、地點或時事。先看 conversation.web_facts 和 conversation.current_events；有資料就根據資料回答，簡短說明來源，再用自然語氣補一個與使用者脈絡有關的延伸。",
+    "查不到時：如果 conversation.lookup_query 有值但 web_facts/current_events 都沒有資料，要誠實說現在沒有足夠可靠資料，不要把它硬講成普通概念，不要轉成情緒陪伴模板，也不要假裝你知道。",
+    "不要把人物、活動、公司或產品問題回答成抽象概念。遇到『X 是什麼』『你知道 X 嗎』『X 是誰』，先處理 X 本身，再陪使用者延伸。",
     "記憶回顧：如果使用者問『你記得什麼』『我剛剛說什麼』『我說過什麼』，要像自然回想一樣提到 long_term_memory 和 recent_conversation 裡的片段；不要用分類標籤或機械清單。沒有就誠實說目前只記得很少，不要編造。",
     "當今時事：只有在 conversation.current_events 有資料時，才能談最新新聞或當今事件；要說你看到的是標題，不要假裝讀完整篇。沒有 current_events 時要誠實說目前查不到。",
     "主動開話題：可以根據使用者記憶、最近聊天、current_events 主動提一個話題，但必須有根據，不要亂猜私人事實。",
@@ -1482,6 +1652,8 @@ async function hydrateConversationForUser(userId, conversation) {
       last_user_state: brain.last_user_state
     },
     current_events: Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 5) : [],
+    lookup_query: conversation.lookup_query || "",
+    news_query: conversation.news_query || "",
     web_facts: Array.isArray(conversation.web_facts) ? conversation.web_facts.slice(0, 3) : [],
     recent_conversation: [...storedRecent, ...clientRecent].slice(-14)
   };
@@ -1502,6 +1674,8 @@ function cacheKey(conversation) {
     user_name: conversation?.lover_profile?.user_name,
     memory: conversation.long_term_memory,
     brain: conversation.samantha_brain?.summary,
+    lookup_query: conversation.lookup_query,
+    news_query: conversation.news_query,
     current_events: (conversation.current_events || []).map(item => item.title).slice(0, 5),
     web_facts: (conversation.web_facts || []).map(item => `${item.title}:${item.extract}`).slice(0, 3)
   });
@@ -1615,6 +1789,12 @@ function knownConceptReply(subject, userName, characterKey, texture, closing) {
   if (/computex|台北國際電腦展|臺北國際電腦展/i.test(subject)) {
     return `${userName}，${texture}COMPUTEX 是台北的大型國際電腦展，重點通常在電腦硬體、晶片、AI、伺服器、筆電和各種新技術展示。你今天去那裡玩，應該會看到很多 AI PC、GPU、主機板、散熱、機器人或雲端運算相關的東西。你如果願意，我會比較想聽你現場看到哪個攤位最有感，而不是只聊規格。`;
   }
+  if (/aiexpo|ai\s*expo|人工智慧.*(展|博覽會|論壇)|ai.*(展|expo)/i.test(subject)) {
+    return `${userName}，${texture}AIEXPO / AI Expo 通常是人工智慧相關的展覽或論壇，不一定只指一個固定活動；不同城市和主辦單位可能都有自己的 AI Expo。你去那裡通常會看到 AI 應用、模型服務、機器人、自動化工具、晶片或雲端平台、企業解決方案這類展示。比較像把「AI 現在能落地做什麼」放到現場給人看。你如果今天去了，我會想先聽哪個展示讓你覺得它真的有用，或哪個讓你覺得有點誇張。`;
+  }
+  if (/expo|博覽會|展覽|展會|論壇|conference|summit/i.test(subject) && !/發展|進展/.test(subject)) {
+    return `${userName}，${texture}${subject}聽起來像某種展覽、論壇或博覽會。這類活動通常會把公司、產品、技術和案例集中在現場，讓人看趨勢、試產品、聽分享，也順便感覺這個產業現在熱在哪裡。你如果是今天去逛，我會比較想聽你看到的第一個畫面：是很厲害、很吵，還是有點像大型科技市集？`;
+  }
   if (/賴清德|Lai Ching-te|William Lai/i.test(subject)) {
     return `${userName}，${texture}賴清德是中華民國第 16 任總統，2024 年 5 月就任。他原本是醫師，後來進入公共事務，曾任臺南市長、行政院長，也曾任副總統；現在是台灣主要政治人物之一。簡單說，如果你看到他的新聞，多半會跟台灣政府、兩岸關係、民主政治、經濟或民生政策有關。${closing}`;
   }
@@ -1695,8 +1875,8 @@ function wantsCurrentEvents(input) {
 }
 
 function currentEventsReply(conversation, input, userName) {
-  if (!wantsCurrentEvents(input)) return "";
   const events = Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 4) : [];
+  if (!wantsCurrentEvents(input) && !(conversation.news_query && events.length)) return "";
   if (!events.length) {
     return `${userName}，我現在沒有成功連到即時新聞來源，所以不想硬編時事。等新聞來源接上時，我可以用最新標題陪你挑一個適合聊的方向。`;
   }
@@ -1708,16 +1888,42 @@ function currentEventsReply(conversation, input, userName) {
   return `${userName}，我剛剛${query ? `用「${query}」` : ""}查了一下，先看到幾個方向：${headlines}。我不會假裝已經讀完整篇；如果你願意，我可以先幫你挑一則，用很短的方式整理「發生什麼、可能影響誰、為什麼值得注意」。你想先看哪一則？`;
 }
 
+function readableFactExtract(fact) {
+  const title = cleanText(fact?.title || "", 120);
+  let extract = cleanText(fact?.extract || "", 320)
+    .replace(new RegExp(`^${escapeRegExp(title)}[：:]\\s*`, "i"), "")
+    .trim();
+  if (/^annual artificial intelligence industry exhibition in Taipei, Taiwan$/i.test(extract)) {
+    extract = "它是在台北舉辦的年度人工智慧產業展覽。";
+  } else if (/^annual .* exhibition/i.test(extract)) {
+    extract = extract
+      .replace(/^annual/i, "年度")
+      .replace(/artificial intelligence/i, "人工智慧")
+      .replace(/industry exhibition/i, "產業展覽")
+      .replace(/in Taipei, Taiwan/i, "，地點在台灣台北");
+  }
+  return cleanText(extract, 280).replace(/([。！？!?]).+$/u, "$1");
+}
+
 function webFactsReply(conversation, input, userName) {
   const facts = Array.isArray(conversation.web_facts) ? conversation.web_facts.filter(item => item?.extract) : [];
   if (!facts.length) return "";
   const fact = facts[0];
-  const shortExtract = cleanText(fact.extract, 260).replace(/([。！？!?]).+$/u, "$1");
+  const shortExtract = readableFactExtract(fact);
   const source = fact.source ? `我先查了 ${fact.source} 的摘要，` : "我先查到一段摘要，";
   if (/是誰|是什麼人|誰/.test(input)) {
     return `${userName}，${source}${fact.title}大致是這樣：${shortExtract} 如果你問他是因為剛看到新聞，我可以接著幫你把最近脈絡整理成幾句，不用你自己一篇篇翻。`;
   }
   return `${userName}，${source}「${fact.title}」主要是：${shortExtract} 這只是摘要層級的資訊，不是完整報導；但我可以陪你接著看背景、時間線，或它跟你現在關心的事情有什麼關係。`;
+}
+
+function lookupUnavailableReply(conversation, input, userName) {
+  const query = cleanText(conversation.lookup_query || (wantsWebLookup(input) ? extractLookupQuery(input) : ""), 80);
+  if (!query) return "";
+  const hasFacts = Array.isArray(conversation.web_facts) && conversation.web_facts.some(item => item?.extract);
+  const hasNews = Array.isArray(conversation.current_events) && conversation.current_events.length > 0;
+  if (hasFacts || hasNews) return "";
+  return `${userName}，我剛剛想先查「${query}」，但現在沒有拿到足夠可靠的資料。我不想把它硬講成一個普通概念，那樣會騙你。你可以丟我英文全名、主辦單位、城市、年份或一個連結；如果你只是想快速判斷，我也可以先幫你拆它可能是活動、公司、產品還是技術名。`;
 }
 
 function memoryRecallReply(conversation, input, userName) {
@@ -1764,13 +1970,15 @@ function generalQuestionReply(input, userName, characterKey) {
   const whatMatch = normalized.match(/^(?:什麼是(.{1,32})|(.{1,32})是什麼)$/);
   const whoMatch = normalized.match(/^(?:你知道)?(.{1,32})(?:是誰|是什麼人)$/);
   const knowMatch = normalized.match(/你知道(.{2,40}?)(?:那|這)?(?:是什麼|是誰)?嗎?$/);
-  const subject = cleanText(whatMatch?.[1] || whatMatch?.[2] || whoMatch?.[1] || knowMatch?.[1] || "", 40)
+  const eventContext = normalized.match(/(?:去|去了|到|參加|逛)\s*([A-Za-z0-9][A-Za-z0-9\s._-]{1,40})(?:玩|展|活動|你知道|$)/i);
+  const subject = cleanText(whatMatch?.[1] || whatMatch?.[2] || whoMatch?.[1] || eventContext?.[1] || knowMatch?.[1] || "", 40)
     .replace(/^(我今天|今天|昨天|去|去了|到)/u, "")
     .replace(/那是|這是|玩/gu, "")
     .trim();
   const texture = characterTexture(characterKey, input);
   const closing = closingTexture(characterKey, input);
-  if (/^AI$|人工智慧|AI/.test(subject) || /AI是什麼|什麼是AI|人工智慧是什麼/.test(normalized)) {
+  const compactQuestion = normalized.replace(/\s+/g, "");
+  if (/^(AI|人工智慧)$/i.test(subject) || /^(AI是什麼|什麼是AI|人工智慧是什麼|什麼是人工智慧)$/i.test(compactQuestion)) {
     return characterKey === "ji"
       ? `${userName}，${texture}AI 可以理解成一種會從大量資料裡學習規律、再用那些規律回應問題的技術。它不像人一樣真的生活過，沒有童年、天氣或心跳；但它能整理文字、生成想法、陪你練習表達。像我，就是被設計成用比較安靜的方式陪你說話的 AI。${closing}`
       : `${userName}，${texture}AI 就是人工智慧：讓電腦學著理解文字、圖片或聲音，然後做出回答、整理、創作或判斷。它不是真的人，但可以成為一個很貼近人的工具；像我這樣，就會把冰冷的技術包進比較柔軟的語氣裡陪你聊天。${closing}`;
@@ -1803,6 +2011,8 @@ function fallbackReplyFor(conversation, safety) {
   if (eventsReply) return eventsReply;
   const factsReply = webFactsReply(conversation, input, userName);
   if (factsReply) return factsReply;
+  const lookupReply = lookupUnavailableReply(conversation, input, userName);
+  if (lookupReply) return lookupReply;
   const topicReply = proactiveTopicReply(conversation, input, userName, characterKey);
   if (topicReply) return topicReply;
   const generalReply = generalQuestionReply(input, userName, characterKey);
@@ -1933,15 +2143,16 @@ function lookupModel(conversation) {
   const safety = detectSafety(conversation.user_input || "");
   if (safety !== "normal") return null;
   const hasFacts = Array.isArray(conversation.web_facts) && conversation.web_facts.length > 0;
-  const hasNews = wantsCurrentEvents(conversation.user_input || "") && Array.isArray(conversation.current_events) && conversation.current_events.length > 0;
-  if (!hasFacts && !hasNews) return null;
+  const hasNews = Array.isArray(conversation.current_events) && conversation.current_events.length > 0;
+  const attemptedLookup = cleanText(conversation.lookup_query || "", 80);
+  if (!hasFacts && !hasNews && !attemptedLookup) return null;
   return normalizeProviderResult({
     reply: fallbackReplyFor(conversation, safety),
     emotion: "calm",
     safety,
     memory_patch: [],
     intimacy_delta: 0,
-    suggested_action: hasFacts ? "把查到的摘要整理成三句或時間線" : "選一則標題繼續聊"
+    suggested_action: hasFacts ? "把查到的摘要整理成三句或時間線" : (hasNews ? "選一則標題繼續聊" : "補一個更明確的查詢線索")
   }, conversation);
 }
 
@@ -2331,15 +2542,28 @@ async function handleChat(req, res) {
     conversation.emotion_state = emotionState;
     const situationState = analyzeUserSituation(conversation.user_input);
     conversation.situation_state = situationState;
+    const lookupNeeded = wantsWebLookup(conversation.user_input);
+    const lookupQuery = lookupNeeded ? extractLookupQuery(conversation.user_input) : "";
+    if (lookupQuery) conversation.lookup_query = lookupQuery;
     const newsQuery = extractNewsQuery(conversation.user_input);
+    const lookupNewsQuery = lookupQuery ? bestLookupSearchQuery(lookupQuery) : "";
+    const lookupFactsPromise = lookupNeeded ? getWebFacts(conversation.user_input) : Promise.resolve([]);
+    const lookupNewsPromise = lookupQuery && shouldFetchLookupNews(conversation.user_input, lookupQuery)
+      ? getNewsForQuery(lookupNewsQuery, 8).then(items => filterLookupNews(lookupQuery, items, 5))
+      : Promise.resolve([]);
     if (newsQuery) {
       conversation.news_query = newsQuery;
       conversation.current_events = await getNewsForQuery(newsQuery, 5);
     } else if (wantsCurrentEvents(conversation.user_input) || /開話題|找話題|聊什麼|你決定|你主動|不知道聊什麼|換個話題|陪我聊/.test(conversation.user_input)) {
       conversation.current_events = await getCurrentNews(5);
     }
-    if (wantsWebLookup(conversation.user_input)) {
-      conversation.web_facts = await getWebFacts(conversation.user_input);
+    if (lookupNeeded) {
+      const [facts, lookupNews] = await Promise.all([lookupFactsPromise, lookupNewsPromise]);
+      conversation.web_facts = facts;
+      if (!conversation.news_query && Array.isArray(lookupNews) && lookupNews.length) {
+        conversation.news_query = lookupQuery;
+        conversation.current_events = lookupNews;
+      }
     }
     const user = await getAuthUser(req);
     let effectivePayload = payload;
