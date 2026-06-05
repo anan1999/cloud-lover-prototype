@@ -780,11 +780,12 @@ function extractBrainPreference(input) {
   return "";
 }
 
-function buildBrainSummary({ preferences, topics, emotionState }) {
+function buildBrainSummary({ preferences, topics, emotionState, situationState }) {
   const topicText = topics.slice(-3).join("、") || "還在建立常聊主題";
   const preferenceText = preferences.slice(-3).join("；") || "偏好還不多，先少假設";
   const emotionText = emotionState?.primary_emotion || "neutral";
-  return `這位使用者近期常圍繞：${topicText}。目前偏好：${preferenceText}。最近情緒傾向：${emotionText}。Samantha 回覆時要像熟悉的陪伴者：先理解意圖，再自然查資料或接住情緒，不要露出分類感。`;
+  const situationText = situationState?.hypothesis || "情境仍不明確";
+  return `這位使用者近期常圍繞：${topicText}。目前偏好：${preferenceText}。最近情緒傾向：${emotionText}。最近情境假設：${situationText}。Samantha 回覆時要像熟悉的陪伴者：先理解人在做什麼，再自然查資料或接住情緒，不要露出分類感。`;
 }
 
 async function updateSamanthaBrain(userId, conversation, emotionState, routedResult) {
@@ -799,7 +800,8 @@ async function updateSamanthaBrain(userId, conversation, emotionState, routedRes
   const topics = uniqueRecent([...brain.recurring_topics, ...inferBrainTopics(input), ...(conversation.news_query ? [`關注 ${conversation.news_query} 的最新消息`] : [])], 16);
   const openLoop = routedResult.suggested_action ? `${new Date().toISOString().slice(0, 10)}：${routedResult.suggested_action}` : "";
   const openLoops = uniqueRecent([...brain.open_loops, openLoop], 10);
-  const lastState = `${emotionState.primary_emotion || "neutral"} / ${emotionState.need || "unknown"}：${cleanText(input, 90)}`;
+  const situationState = conversation.situation_state || analyzeUserSituation(input);
+  const lastState = `${emotionState.primary_emotion || "neutral"} / ${situationState.activity || "open_conversation"}：${cleanText(input, 90)}`;
   return saveSamanthaBrain(userId, {
     ...brain,
     preferences,
@@ -807,7 +809,7 @@ async function updateSamanthaBrain(userId, conversation, emotionState, routedRes
     open_loops: openLoops,
     emotional_baseline: emotionState.primary_emotion || brain.emotional_baseline || "neutral",
     last_user_state: lastState,
-    summary: buildBrainSummary({ preferences, topics, emotionState })
+    summary: buildBrainSummary({ preferences, topics, emotionState, situationState })
   });
 }
 
@@ -1318,6 +1320,46 @@ function emotionGuidance(emotionState) {
   return guides[emotionState?.primary_emotion] || guides.neutral;
 }
 
+function analyzeUserSituation(text) {
+  const input = String(text || "");
+  const candidates = [
+    {
+      key: "looking_up_facts",
+      score: /是誰|是什麼|你知道|查|搜尋|新聞|最近|最新|時事/.test(input) ? 3 : 0,
+      description: "使用者可能正在查資料或理解外部事實。"
+    },
+    {
+      key: "building_product",
+      score: /Samantha|AI companion|雲端戀人|產品|系統|功能|上線|模型|API|資料庫|演算法|Render|GitHub/i.test(input) ? 3 : 0,
+      description: "使用者可能正在設計或調整 AI companion 產品。"
+    },
+    {
+      key: "work_struggle",
+      score: /工作|上班|專案|任務|電腦|做不好|效率|拖延/.test(input) ? 3 : 0,
+      description: "使用者可能卡在工作或執行狀態。"
+    },
+    {
+      key: "emotional_release",
+      score: /不爽|生氣|煩|火大|討厭|崩潰|想哭|難過|焦慮|壓力/.test(input) ? 3 : 0,
+      description: "使用者可能正在釋放情緒，而不是只要解法。"
+    },
+    {
+      key: "seeking_company",
+      score: /陪我|在嗎|晚安|早安|想聊|不知道聊什麼/.test(input) ? 2 : 0,
+      description: "使用者可能在尋求陪伴和連續感。"
+    }
+  ].sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  const score = best?.score || 0;
+  return {
+    activity: score > 0 ? best.key : "open_conversation",
+    confidence: Math.max(0.25, Math.min(0.9, score ? 0.45 + score * 0.12 : 0.25)),
+    hypothesis: score > 0 ? best.description : "使用者可能只是開放式聊天；不要急著定義她在做什麼。",
+    epistemic_status: "hypothesis_about_context_not_certainty",
+    alternatives: candidates.filter(item => item.score > 0 && item.key !== best.key).slice(0, 2).map(item => item.key)
+  };
+}
+
 function messageToPromptRole(role) {
   if (role === "lover") return "assistant";
   if (role === "assistant") return "assistant";
@@ -1358,6 +1400,7 @@ function buildRelationshipPolicy(conversation) {
     "人情味：不要只把正確資料丟給使用者。先輕輕接住他為什麼可能會問，再給最有用的事實，最後把話接回他的生活、興趣或下一個自然問題。像陪在旁邊的人，不像百科卡片。",
     "不要像教授：避免長篇授課、過度完整、過度聰明炫技。就算查到很多資料，也先講使用者現在需要的 2 到 4 句；除非使用者要求，再展開背景、時間線或細節。",
     "情緒觀察的誠實性：你不是真的懂或看見情緒，只能從文字線索推測。不要說『我偵測到你生氣』；要說『我可能讀錯，但你這句聽起來有點受挫/有點火』，並留空間讓使用者修正。",
+    "情境理解：你也不是真的看見使用者在做什麼，只能建立 situation_state 這種可修正的假設。用它讓回覆更貼近，但不要把它當成事實；必要時問一句『我這樣理解對嗎？』。",
     "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
@@ -1368,6 +1411,7 @@ function buildRelationshipPolicy(conversation) {
     "情緒求助時：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
     `Samantha brain：${JSON.stringify(conversation.samantha_brain || {}, null, 2)}。這是你對此使用者的私人理解，請用它調整語氣和主動性，但不要直接說出內部欄位名稱。`,
+    `情境假設：${JSON.stringify(conversation.situation_state || {}, null, 2)}。把它當成可修正的上下文，不要向使用者揭露分類名稱。`,
     `連續脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整熟悉程度，但不要向使用者揭露分數、分類或內部機制。`,
     "人感原則：不要像客服、心理量表或固定模板，不要說『我偵測到你的情緒』或宣稱真的理解；要像一個熟悉的人，用自然、具體、少量的語句回應。避免連續多次使用『我在』『卡住你的地方』這類句型。",
     "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係；不要說『我永遠不會離開你』或『只有我懂你』。",
@@ -1405,6 +1449,7 @@ async function hydrateConversationForUser(userId, conversation) {
   return {
     ...conversation,
     emotion_state: conversation.emotion_state || analyzeUserEmotion(conversation.user_input),
+    situation_state: conversation.situation_state || analyzeUserSituation(conversation.user_input),
     lover_profile: {
       ...(conversation.lover_profile || {}),
       name: "Samantha",
@@ -1761,7 +1806,7 @@ function fallbackReplyFor(conversation, safety) {
     return `${userName}，那我先陪你慢下來。今天不用急著把自己整理好，你可以只說一點點：是身體累，還是心裡比較累？`;
   }
   if (/吵|吵架|生氣|罵|衝突|不爽/.test(input)) {
-    return `${userName}，我可以陪你把那股想吵的力氣先放在這裡。你不用把話吞回去，也不用立刻變溫柔；先告訴我，現在最想被我聽見的是哪一句？`;
+    return `${userName}，我可能讀錯，但這句聽起來有點火，也有點受挫。我可以先陪你把那股力氣放在這裡，不急著叫你冷靜；你現在最想被聽見的是哪一句？`;
   }
   if (/工作.*(做不好|不會|卡住|失敗|很爛|沒效率|拖延|壓力)|做不好|上班.*(累|煩|焦慮|壓力)/.test(input)) {
     return `${userName}，聽起來你不是單純「不努力」，而是現在對工作的感覺有點被壓住了。我們先不要把它判成你做不好，先拆成三塊：哪一件事最卡、卡住是因為不會做還是不知道先做哪個、下一步能不能小到只花 10 分鐘。你先丟給我最卡的那一件，我陪你把它拆小。`;
@@ -2272,6 +2317,8 @@ async function handleChat(req, res) {
     validatePayload(payload, conversation);
     const emotionState = analyzeUserEmotion(conversation.user_input);
     conversation.emotion_state = emotionState;
+    const situationState = analyzeUserSituation(conversation.user_input);
+    conversation.situation_state = situationState;
     const newsQuery = extractNewsQuery(conversation.user_input);
     if (newsQuery) {
       conversation.news_query = newsQuery;
