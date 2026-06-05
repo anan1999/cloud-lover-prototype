@@ -184,7 +184,7 @@
             <select id="evalScenario"></select>
           </label>
           <label>輪數
-            <input id="evalTurns" type="number" min="30" max="60" value="30">
+            <input id="evalTurns" type="number" min="30" max="90" value="60">
           </label>
           <button class="primary" id="runScriptedBtn">跑固定劇本</button>
           <button class="ghost" id="runLlmBtn">跑 LLM 測試官</button>
@@ -401,13 +401,13 @@
 
     function syncEvaluationTurns() {
       $("#evalTurns").min = "30";
-      $("#evalTurns").max = "60";
-      $("#evalTurns").value = String(Math.max(30, Math.min(Number($("#evalTurns").value || 30), 60)));
+      $("#evalTurns").max = "90";
+      $("#evalTurns").value = String(Math.max(30, Math.min(Number($("#evalTurns").value || 60), 90)));
     }
 
     async function runEvaluation(mode) {
       const scenario = $("#evalScenario").value || "core";
-      const turns = Math.max(30, Math.min(Number($("#evalTurns").value || 30), 60));
+      const turns = Math.max(30, Math.min(Number($("#evalTurns").value || 60), 90));
       $("#runScriptedBtn").disabled = true;
       $("#runLlmBtn").disabled = true;
       $("#evalStatus").textContent = mode === "llm" ? "LLM 測試官正在和 Samantha 對話..." : "固定劇本正在測試 Samantha...";
