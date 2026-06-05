@@ -1489,7 +1489,7 @@ function currentEventsReply(conversation, input, userName) {
     .slice(0, 3)
     .map(item => `${item.title}${item.source ? `（${item.source}）` : ""}`)
     .join("；");
-  return `${userName}，我剛剛${query ? `用「${query}」` : ""}查了一下，先看到幾個方向：${headlines}。我不會假裝已經讀完整篇，但大概可以先陪你看「國際互動」「產業影響」或「爭議反應」其中一塊。你比較想先聽哪個？`;
+  return `${userName}，我剛剛${query ? `用「${query}」` : ""}查了一下，先看到幾個方向：${headlines}。我不會假裝已經讀完整篇；如果你願意，我可以先幫你挑一則，用很短的方式整理「發生什麼、可能影響誰、為什麼值得注意」。你想先看哪一則？`;
 }
 
 function webFactsReply(conversation, input, userName) {
