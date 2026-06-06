@@ -96,6 +96,32 @@ Admin dashboard:
 - When Gemini/OpenAI/Codex-compatible providers return usage metadata, Samantha stores the provider token counts. If a route has no provider usage, the dashboard falls back to estimation.
 - Grounded/rules replies record estimated text tokens but show `0` API tokens because they do not call a paid external model.
 - Evaluation runs can use `grounded`, `codex_only`, or `gemini_codex` route modes. Use `grounded` for large stable tests, `codex_only` when Gemini is rate-limited, and `gemini_codex` for slow production-route tests.
+- Evaluation metrics now include Samantha-specific quality dimensions: continuity, specificity, warmth, boundary, memory precision, non-generic response quality, rhythm, and helpfulness.
+
+Memory management:
+
+- Open `/memories.html` after logging in.
+- Users can view, edit, delete, mark incorrect, mark "do not mention", clear, and export Samantha memories.
+- Memory is stored as structured rows: profile, preference, episodic, emotional, open-loop, and boundary memory.
+- Each memory has importance, confidence, last-used time, source message id, editability, optional expiry, and metadata.
+
+Private response planning:
+
+- Each reply builds a private `response_plan` before provider routing.
+- The plan tracks emotion, intent, mode, selected memories, strategy, follow-up choice, whether to listen first or advise, and safety notes.
+- The model is told not to reveal these labels. They are scaffolding for more natural continuity.
+
+Voice-ready fields:
+
+- Chat payloads and stored messages include `input_channel`, `output_channel`, and a `voice_session` placeholder.
+- Text is still the default MVP path. STT/TTS can be added later without changing the core chat schema again.
+
+Task model routing design:
+
+- Emotion and memory extraction: local fast rules first, optional fast model later.
+- Main reply: Gemini first, Codex fallback.
+- Repair and factual safety: grounded rules first, Codex if needed.
+- Judge/evaluation: local heuristics now, Codex can be added for deeper review later.
 
 Conversation modes:
 

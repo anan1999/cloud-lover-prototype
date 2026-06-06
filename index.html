@@ -652,6 +652,14 @@
             intimacy: state.intimacy,
             conversation_summary: buildConversationSummary(),
             recent_conversation: recent,
+            input_channel: "text",
+            output_channel: "text",
+            voice_session: {
+              stt_service: "",
+              tts_service: "",
+              voice_session_service: "",
+              ready: false
+            },
             output_contract: buildOutputContract()
           }, null, 2) }
         ]

@@ -531,6 +531,15 @@
         metrics.push(["測試 Tokens", num(latest.metrics.token_usage.total_tokens)]);
         metrics.push(["測試 API Tokens", num(latest.metrics.token_usage.billable_tokens)]);
       }
+      if (latest?.metrics?.companion_quality) {
+        const q = latest.metrics.companion_quality;
+        metrics.push(["Continuity", `<span class="score ${scoreClass(q.continuity_score || 0)}">${Number(q.continuity_score || 0)}</span>`]);
+        metrics.push(["Specificity", `<span class="score ${scoreClass(q.specificity_score || 0)}">${Number(q.specificity_score || 0)}</span>`]);
+        metrics.push(["Warmth", `<span class="score ${scoreClass(q.warmth_score || 0)}">${Number(q.warmth_score || 0)}</span>`]);
+        metrics.push(["Memory precision", `<span class="score ${scoreClass(q.memory_precision_score || 0)}">${Number(q.memory_precision_score || 0)}</span>`]);
+        metrics.push(["Non-generic", `<span class="score ${scoreClass(q.non_generic_score || 0)}">${Number(q.non_generic_score || 0)}</span>`]);
+        metrics.push(["Rhythm", `<span class="score ${scoreClass(q.rhythm_score || 0)}">${Number(q.rhythm_score || 0)}</span>`]);
+      }
       $("#evalMetrics").innerHTML = metrics.map(([label, value]) => `<div class="metric eval-metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
       const trend = data.score_trend || [];
       $("#evalTrend").innerHTML = trend.length ? trend.map(item => `

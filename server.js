@@ -79,6 +79,24 @@ const NEWS_RSS_URLS = listFromEnv("NEWS_RSS_URLS", [
   "https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
 ]);
 
+const MEMORY_TYPES = [
+  "profile_memory",
+  "preference_memory",
+  "episodic_memory",
+  "emotional_memory",
+  "open_loop_memory",
+  "boundary_memory"
+];
+const MEMORY_TYPE_SET = new Set(MEMORY_TYPES);
+const TASK_MODEL_ROUTING = {
+  emotion_intent: { primary: "local_rules", fallback: "gemini_fast" },
+  memory_extraction: { primary: "local_rules", fallback: "gemini_fast" },
+  reply: { primary: "gemini", fallback: "codex" },
+  repair: { primary: "grounded_rules", fallback: "codex" },
+  judge: { primary: "local_heuristics", fallback: "codex" },
+  fallback: { primary: "codex", fallback: "grounded_rules" }
+};
+
 const mime = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
@@ -295,6 +313,9 @@ async function initDb() {
     alter table messages add column if not exists usage_source text;
     alter table messages add column if not exists model text;
     alter table messages add column if not exists latency_ms integer;
+    alter table messages add column if not exists input_channel text not null default 'text';
+    alter table messages add column if not exists output_channel text not null default 'text';
+    alter table messages add column if not exists response_plan jsonb not null default '{}'::jsonb;
     alter table profiles add column if not exists companion_mode text not null default 'casual_chat';
     create table if not exists memories (
       id text primary key,
@@ -302,6 +323,16 @@ async function initDb() {
       content text not null,
       created_at timestamptz not null default now()
     );
+    alter table memories add column if not exists memory_type text not null default 'episodic_memory';
+    alter table memories add column if not exists importance_score integer not null default 50;
+    alter table memories add column if not exists confidence_score integer not null default 70;
+    alter table memories add column if not exists last_used_at timestamptz;
+    alter table memories add column if not exists source_message_id text references messages(id) on delete set null;
+    alter table memories add column if not exists is_user_editable boolean not null default true;
+    alter table memories add column if not exists expires_at timestamptz;
+    alter table memories add column if not exists updated_at timestamptz not null default now();
+    alter table memories add column if not exists metadata jsonb not null default '{}'::jsonb;
+    alter table memories add column if not exists status text not null default 'active';
     create table if not exists emotion_events (
       id text primary key,
       user_id text not null references users(id) on delete cascade,
@@ -356,10 +387,13 @@ async function initDb() {
     alter table evaluation_messages add column if not exists billable_tokens integer not null default 0;
     alter table evaluation_messages add column if not exists usage_estimated boolean not null default true;
     alter table evaluation_messages add column if not exists usage_source text;
+    alter table evaluation_messages add column if not exists companion_quality jsonb not null default '{}'::jsonb;
     create index if not exists messages_user_created_idx on messages(user_id, created_at);
     create index if not exists messages_user_character_created_idx on messages(user_id, character_key, created_at);
     create index if not exists messages_token_usage_idx on messages(provider, created_at);
     create index if not exists memories_user_created_idx on memories(user_id, created_at);
+    create index if not exists memories_user_type_idx on memories(user_id, memory_type, created_at);
+    create index if not exists memories_user_status_idx on memories(user_id, status, updated_at);
     create index if not exists emotion_events_user_created_idx on emotion_events(user_id, created_at);
     create index if not exists emotion_events_emotion_idx on emotion_events(primary_emotion, created_at);
     create index if not exists character_relationships_updated_idx on character_relationships(user_id, updated_at);
@@ -773,6 +807,204 @@ function normalizeMemoryText(value) {
   return cleanText(value, 300).toLowerCase().replace(/\s+/g, "");
 }
 
+function parseJsonObject(value) {
+  if (!value) return {};
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+}
+
+function normalizeMemoryType(value) {
+  const type = cleanText(value, 40);
+  return MEMORY_TYPE_SET.has(type) ? type : "episodic_memory";
+}
+
+function inferMemoryType(content, options = {}) {
+  const explicit = normalizeMemoryType(options.memory_type || options.type);
+  if (options.memory_type || options.type) return explicit;
+  const text = cleanText(content, 300);
+  if (/叫我|名字是|我叫|name is|call me/i.test(text)) return "profile_memory";
+  if (/我是|我的工作|我住|我在.*工作|職業|學校|公司|生日|家人|partner|job|work at/i.test(text)) return "profile_memory";
+  if (/不要|別|不想|不喜歡|界線|底線|避開|別再|do not|don't|avoid/i.test(text)) return "boundary_memory";
+  if (/喜歡|偏好|習慣|希望你|我想要|比較想|比較喜歡|prefer|like|favorite/i.test(text)) return "preference_memory";
+  if (/下次|之後|明天|下週|還沒|記得提醒|待辦|要追|follow up|remind|todo/i.test(text)) return "open_loop_memory";
+  if (/焦慮|緊張|難過|生氣|壓力|孤單|累|失落|害怕|擔心|心情|anxious|sad|angry|lonely|stress|tired/i.test(text)) return "emotional_memory";
+  if (/今天|昨天|剛剛|週末|上次|去了|看到|遇到|完成|發生|展覽|會議|demo|event|visited|met/i.test(text)) return "episodic_memory";
+  return "episodic_memory";
+}
+
+function scoreMemoryImportance(content, memoryType) {
+  const text = cleanText(content, 300);
+  const base = {
+    profile_memory: 82,
+    preference_memory: 74,
+    episodic_memory: 58,
+    emotional_memory: 72,
+    open_loop_memory: 80,
+    boundary_memory: 88
+  }[normalizeMemoryType(memoryType)] || 55;
+  const bonus = (/重要|一定要記得|記住|下次|不要忘|important|remember/i.test(text) ? 10 : 0)
+    + (text.length > 80 ? 4 : 0);
+  return Math.max(1, Math.min(100, base + bonus));
+}
+
+function scoreMemoryConfidence(content, memoryType) {
+  const text = cleanText(content, 300);
+  if (/可能|也許|好像|大概|maybe|perhaps/i.test(text)) return 55;
+  if (memoryType === "profile_memory" || memoryType === "boundary_memory") return 86;
+  if (memoryType === "emotional_memory") return 68;
+  return 74;
+}
+
+function normalizeMemoryRow(row = {}) {
+  const memoryType = normalizeMemoryType(row.memory_type || row.type);
+  const content = cleanText(row.content, 300);
+  return {
+    id: row.id || "",
+    user_id: row.user_id || "",
+    content,
+    memory_type: memoryType,
+    importance_score: Math.max(1, Math.min(100, clampInteger(row.importance_score, scoreMemoryImportance(content, memoryType)))),
+    confidence_score: Math.max(1, Math.min(100, clampInteger(row.confidence_score, scoreMemoryConfidence(content, memoryType)))),
+    last_used_at: row.last_used_at || null,
+    source_message_id: row.source_message_id || null,
+    is_user_editable: row.is_user_editable !== false,
+    expires_at: row.expires_at || null,
+    created_at: row.created_at || new Date().toISOString(),
+    updated_at: row.updated_at || row.created_at || new Date().toISOString(),
+    metadata: parseJsonObject(row.metadata),
+    status: row.status || "active"
+  };
+}
+
+function memoryFromContent(userId, content, options = {}) {
+  const text = cleanText(content, 300);
+  const memoryType = inferMemoryType(text, options);
+  return normalizeMemoryRow({
+    id: options.id || uid(),
+    user_id: userId,
+    content: text,
+    memory_type: memoryType,
+    importance_score: options.importance_score ?? scoreMemoryImportance(text, memoryType),
+    confidence_score: options.confidence_score ?? scoreMemoryConfidence(text, memoryType),
+    source_message_id: options.source_message_id || null,
+    is_user_editable: options.is_user_editable !== false,
+    expires_at: options.expires_at || null,
+    metadata: options.metadata || {},
+    status: options.status || "active",
+    created_at: options.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  });
+}
+
+function cjkBigrams(text) {
+  const compact = String(text || "").replace(/[^\u3400-\u9fff]/g, "");
+  const output = [];
+  for (let index = 0; index < compact.length - 1; index += 1) output.push(compact.slice(index, index + 2));
+  return output;
+}
+
+function memoryKeywordSet(text) {
+  const source = cleanText(text, 500).toLowerCase();
+  return new Set([
+    ...(source.match(/[a-z0-9][a-z0-9._-]{1,}/gi) || []).map(item => item.toLowerCase()),
+    ...(source.match(/[\u3400-\u9fff]{2,}/g) || []),
+    ...cjkBigrams(source)
+  ].filter(item => item.length >= 2));
+}
+
+function memoryRelevanceScore(memory, conversation, emotionState) {
+  const input = cleanText(conversation?.user_input || "", 500);
+  const recentText = Array.isArray(conversation?.recent_conversation)
+    ? conversation.recent_conversation.slice(-6).map(item => item.content || item.text || "").join(" ")
+    : "";
+  const queryTokens = memoryKeywordSet(`${input} ${recentText} ${emotionState?.primary_emotion || ""}`);
+  const memoryTokens = memoryKeywordSet(memory.content);
+  let overlap = 0;
+  for (const token of memoryTokens) if (queryTokens.has(token)) overlap += token.length > 2 ? 2 : 1;
+  const type = normalizeMemoryType(memory.memory_type);
+  const typeBoost = {
+    profile_memory: 14,
+    boundary_memory: 18,
+    open_loop_memory: /下次|之後|明天|提醒|還有|continue|follow/i.test(input) ? 30 : 12,
+    emotional_memory: emotionState?.primary_emotion && emotionState.primary_emotion !== "neutral" ? 24 : 8,
+    preference_memory: 16,
+    episodic_memory: 8
+  }[type] || 0;
+  const importance = Math.round(Number(memory.importance_score || 50) / 10);
+  const recency = memory.created_at ? Math.max(0, 8 - Math.floor((Date.now() - new Date(memory.created_at).getTime()) / (1000 * 60 * 60 * 24 * 14))) : 0;
+  return overlap * 9 + typeBoost + importance + recency;
+}
+
+function selectMemoryContext(memories, conversation, emotionState) {
+  const active = (memories || [])
+    .map(normalizeMemoryRow)
+    .filter(item => item.content && item.status === "active" && (!item.expires_at || new Date(item.expires_at).getTime() > Date.now()));
+  const byType = type => active
+    .filter(item => item.memory_type === type)
+    .sort((a, b) => {
+      const scoreDiff = memoryRelevanceScore(b, conversation, emotionState) - memoryRelevanceScore(a, conversation, emotionState);
+      if (scoreDiff) return scoreDiff;
+      return Number(b.importance_score || 0) - Number(a.importance_score || 0);
+    });
+  const stableProfile = byType("profile_memory").slice(0, 4);
+  const boundaries = byType("boundary_memory").slice(0, 4);
+  const preferences = byType("preference_memory").slice(0, 5);
+  const openLoops = byType("open_loop_memory").slice(0, 4);
+  const emotionalPatterns = byType("emotional_memory").slice(0, 4);
+  const relevant = active
+    .map(item => ({ item, score: memoryRelevanceScore(item, conversation, emotionState) }))
+    .filter(entry => entry.score >= 18 || ["profile_memory", "boundary_memory", "open_loop_memory"].includes(entry.item.memory_type))
+    .sort((a, b) => b.score - a.score)
+    .map(entry => entry.item)
+    .slice(0, 10);
+  const chosen = [...stableProfile, ...preferences, ...openLoops, ...emotionalPatterns, ...boundaries, ...relevant];
+  const seen = new Set();
+  const selected = chosen.filter(item => {
+    const key = item.id || normalizeMemoryText(item.content);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 16);
+  return {
+    stable_profile: stableProfile.map(item => item.content),
+    preferences: preferences.map(item => item.content),
+    open_loops: openLoops.map(item => item.content),
+    emotional_patterns: emotionalPatterns.map(item => item.content),
+    boundaries: boundaries.map(item => item.content),
+    relevant_memories: relevant.map(item => item.content).slice(0, 8),
+    selected_memory_ids: selected.map(item => item.id).filter(Boolean),
+    selected_memories: selected
+  };
+}
+
+async function touchMemoryUse(userId, ids) {
+  const memoryIds = [...new Set((ids || []).filter(Boolean))].slice(0, 24);
+  if (!userId || !memoryIds.length) return;
+  await ensureDb();
+  const result = await queryDb(
+    "update memories set last_used_at = now(), updated_at = now() where user_id = $1 and id = any($2::text[])",
+    [userId, memoryIds]
+  );
+  if (result) return;
+  const db = readLocalDb();
+  const nowIso = new Date().toISOString();
+  for (const item of db.memories || []) {
+    if (item.user_id === userId && memoryIds.includes(item.id)) {
+      item.last_used_at = nowIso;
+      item.updated_at = nowIso;
+    }
+  }
+  writeLocalDb(db);
+}
+
 async function findUserByEmail(email) {
   await ensureDb();
   const result = await queryDb("select * from users where email = $1", [email]);
@@ -900,25 +1132,51 @@ async function upsertProfile(userId, profile) {
 
 async function getMemories(userId, limit = 30) {
   await ensureDb();
-  const result = await queryDb("select * from memories where user_id = $1 order by created_at desc limit $2", [userId, limit]);
-  if (result) return result.rows;
+  const result = await queryDb("select * from memories where user_id = $1 and coalesce(status, 'active') <> 'deleted' order by importance_score desc, created_at desc limit $2", [userId, limit]);
+  if (result) return result.rows.map(normalizeMemoryRow);
   const db = readLocalDb();
-  return db.memories.filter(item => item.user_id === userId).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, limit);
+  return db.memories
+    .filter(item => item.user_id === userId && item.status !== "deleted")
+    .map(normalizeMemoryRow)
+    .sort((a, b) => (Number(b.importance_score || 0) - Number(a.importance_score || 0)) || String(b.created_at).localeCompare(String(a.created_at)))
+    .slice(0, limit);
 }
 
-async function addMemory(userId, content) {
+async function addMemory(userId, content, options = {}) {
   const text = cleanText(content, 300);
   if (!text) return null;
   await ensureDb();
   const existing = await getMemories(userId, 100);
   const normalized = normalizeMemoryText(text);
   const duplicate = existing.find(item => normalizeMemoryText(item.content) === normalized);
-  if (duplicate) return duplicate;
-  const id = uid();
-  const result = await queryDb("insert into memories (id, user_id, content) values ($1, $2, $3) returning *", [id, userId, text]);
-  if (result) return result.rows[0];
+  if (duplicate) {
+    const nextImportance = Math.max(Number(duplicate.importance_score || 0), scoreMemoryImportance(text, duplicate.memory_type));
+    await queryDb("update memories set importance_score = $1, updated_at = now() where id = $2 and user_id = $3", [nextImportance, duplicate.id, userId]);
+    return { ...duplicate, importance_score: nextImportance };
+  }
+  const item = memoryFromContent(userId, text, options);
+  const result = await queryDb(`
+    insert into memories (
+      id, user_id, content, memory_type, importance_score, confidence_score,
+      source_message_id, is_user_editable, expires_at, metadata, status
+    )
+    values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+    returning *
+  `, [
+    item.id,
+    item.user_id,
+    item.content,
+    item.memory_type,
+    item.importance_score,
+    item.confidence_score,
+    item.source_message_id,
+    item.is_user_editable,
+    item.expires_at,
+    JSON.stringify(item.metadata || {}),
+    item.status
+  ]);
+  if (result) return normalizeMemoryRow(result.rows[0]);
   const db = readLocalDb();
-  const item = { id, user_id: userId, content: text, created_at: new Date().toISOString() };
   db.memories.push(item);
   writeLocalDb(db);
   return item;
@@ -926,30 +1184,129 @@ async function addMemory(userId, content) {
 
 async function replaceMemories(userId, items) {
   await ensureDb();
-  const memories = Array.isArray(items) ? items.map(item => cleanText(item, 300)).filter(Boolean).slice(0, 30) : [];
+  const memories = Array.isArray(items)
+    ? items.map(item => typeof item === "string" ? memoryFromContent(userId, item) : memoryFromContent(userId, item?.content, item || {})).filter(item => item.content).slice(0, 30)
+    : [];
   const result = await queryDb("delete from memories where user_id = $1", [userId]);
   if (result) {
-    for (const item of memories) await addMemory(userId, item);
+    for (const item of memories) await addMemory(userId, item.content, item);
     return getMemories(userId);
   }
   const db = readLocalDb();
   db.memories = db.memories.filter(item => item.user_id !== userId);
-  for (const item of memories) db.memories.push({ id: uid(), user_id: userId, content: item, created_at: new Date().toISOString() });
+  for (const item of memories) db.memories.push(item);
   writeLocalDb(db);
   return getMemories(userId);
 }
 
-async function mergeMemories(userId, items, limit = 30) {
-  const incoming = Array.isArray(items) ? items.map(item => cleanText(item, 300)).filter(Boolean) : [];
+async function mergeMemories(userId, items, limit = 30, options = {}) {
+  const incoming = Array.isArray(items)
+    ? items.map(item => typeof item === "string" ? memoryFromContent(userId, item, options) : memoryFromContent(userId, item?.content, { ...options, ...(item || {}) })).filter(item => item.content)
+    : [];
   if (!incoming.length) return getMemories(userId, limit);
   const seen = new Set((await getMemories(userId, 100)).map(item => normalizeMemoryText(item.content)));
   for (const item of incoming) {
-    const key = normalizeMemoryText(item);
+    const key = normalizeMemoryText(item.content);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    await addMemory(userId, item);
+    await addMemory(userId, item.content, item);
   }
   return getMemories(userId, limit);
+}
+
+function publicMemory(memory) {
+  const item = normalizeMemoryRow(memory);
+  return {
+    id: item.id,
+    content: item.content,
+    memory_type: item.memory_type,
+    importance_score: item.importance_score,
+    confidence_score: item.confidence_score,
+    last_used_at: item.last_used_at,
+    source_message_id: item.source_message_id,
+    is_user_editable: item.is_user_editable,
+    expires_at: item.expires_at,
+    created_at: item.created_at,
+    updated_at: item.updated_at,
+    metadata: item.metadata,
+    status: item.status
+  };
+}
+
+async function updateMemoryRecord(userId, id, patch = {}) {
+  const memoryId = cleanText(id, 80);
+  if (!memoryId) throw new Error("Memory id required");
+  const content = cleanText(patch.content, 300);
+  const memoryType = patch.memory_type || patch.type ? normalizeMemoryType(patch.memory_type || patch.type) : "";
+  const status = patch.status == null ? "" : (cleanText(patch.status, 40) || "active");
+  const metadata = parseJsonObject(patch.metadata);
+  const importanceScore = patch.importance_score == null ? null : Math.max(1, Math.min(100, clampInteger(patch.importance_score, 50)));
+  const confidenceScore = patch.confidence_score == null ? null : Math.max(1, Math.min(100, clampInteger(patch.confidence_score, 70)));
+  const result = await queryDb(`
+    update memories
+    set content = coalesce(nullif($1, ''), content),
+        memory_type = coalesce(nullif($2, ''), memory_type),
+        importance_score = coalesce($3, importance_score),
+        confidence_score = coalesce($4, confidence_score),
+        is_user_editable = coalesce($5, is_user_editable),
+        expires_at = coalesce($6, expires_at),
+        metadata = metadata || $7::jsonb,
+        status = coalesce(nullif($8, ''), status),
+        updated_at = now()
+    where user_id = $9 and id = $10
+    returning *
+  `, [
+    content,
+    memoryType,
+    importanceScore,
+    confidenceScore,
+    patch.is_user_editable == null ? null : patch.is_user_editable !== false,
+    patch.expires_at || null,
+    JSON.stringify(metadata),
+    status,
+    userId,
+    memoryId
+  ]);
+  if (result) {
+    if (!result.rows[0]) throw new Error("Memory not found");
+    return normalizeMemoryRow(result.rows[0]);
+  }
+  const db = readLocalDb();
+  const row = (db.memories || []).find(item => item.user_id === userId && item.id === memoryId);
+  if (!row) throw new Error("Memory not found");
+  Object.assign(row, {
+    ...(content ? { content } : {}),
+    ...(memoryType ? { memory_type: memoryType } : {}),
+    ...(importanceScore == null ? {} : { importance_score: importanceScore }),
+    ...(confidenceScore == null ? {} : { confidence_score: confidenceScore }),
+    ...(patch.is_user_editable == null ? {} : { is_user_editable: patch.is_user_editable !== false }),
+    ...(patch.expires_at ? { expires_at: patch.expires_at } : {}),
+    metadata: { ...parseJsonObject(row.metadata), ...metadata },
+    ...(status ? { status } : {}),
+    updated_at: new Date().toISOString()
+  });
+  writeLocalDb(db);
+  return normalizeMemoryRow(row);
+}
+
+async function markMemoryStatus(userId, id, status, metadata = {}) {
+  return updateMemoryRecord(userId, id, { status, metadata });
+}
+
+async function clearUserMemories(userId) {
+  await ensureDb();
+  const result = await queryDb("update memories set status = 'deleted', updated_at = now() where user_id = $1", [userId]);
+  if (result) return [];
+  const db = readLocalDb();
+  const nowIso = new Date().toISOString();
+  for (const item of db.memories || []) {
+    if (item.user_id === userId) {
+      item.status = "deleted";
+      item.updated_at = nowIso;
+    }
+  }
+  writeLocalDb(db);
+  return [];
 }
 
 function parseJsonArray(value) {
@@ -1119,7 +1476,7 @@ async function addMessage(userId, role, content, meta = {}) {
   await ensureDb();
   const id = uid();
   const result = await queryDb(
-    "insert into messages (id, user_id, role, content, safety, emotion, provider, emotion_intensity, emotional_need, emotion_valence, character_key, lover_name, input_tokens, output_tokens, total_tokens, billable_tokens, usage_estimated, usage_source, model, latency_ms) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) returning *",
+    "insert into messages (id, user_id, role, content, safety, emotion, provider, emotion_intensity, emotional_need, emotion_valence, character_key, lover_name, input_tokens, output_tokens, total_tokens, billable_tokens, usage_estimated, usage_source, model, latency_ms, input_channel, output_channel, response_plan) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb) returning *",
     [
       id,
       userId,
@@ -1140,7 +1497,10 @@ async function addMessage(userId, role, content, meta = {}) {
       meta.usage_estimated !== false,
       meta.usage_source || null,
       meta.model || null,
-      clampInteger(meta.latency_ms, 0)
+      clampInteger(meta.latency_ms, 0),
+      cleanText(meta.input_channel || "text", 40),
+      cleanText(meta.output_channel || "text", 40),
+      JSON.stringify(parseJsonObject(meta.response_plan))
     ]
   );
   if (result) return result.rows[0];
@@ -1166,6 +1526,9 @@ async function addMessage(userId, role, content, meta = {}) {
     usage_source: meta.usage_source || null,
     model: meta.model || null,
     latency_ms: clampInteger(meta.latency_ms, 0),
+    input_channel: cleanText(meta.input_channel || "text", 40),
+    output_channel: cleanText(meta.output_channel || "text", 40),
+    response_plan: parseJsonObject(meta.response_plan),
     created_at: new Date().toISOString()
   };
   db.messages.push(item);
@@ -1317,6 +1680,7 @@ async function handleAuth(req, res, pathname) {
         relationships,
         samantha_brain: samanthaBrain,
         memories: memories.map(item => item.content),
+        memory_objects: memories.map(publicMemory),
         messages: messages.map(item => ({
           id: item.id,
           role: item.role,
@@ -1347,7 +1711,8 @@ async function handleAuth(req, res, pathname) {
       }
       const token = await createSession(user.id);
       setSessionCookie(req, res, token);
-      return sendJson(req, res, 200, { user: publicUser(user), profile: await getProfile(user.id), relationships: await getCharacterRelationships(user.id), samantha_brain: await getSamanthaBrain(user.id), memories: (await getMemories(user.id)).map(item => item.content), messages: await getMessages(user.id, 220) });
+      const memories = await getMemories(user.id);
+      return sendJson(req, res, 200, { user: publicUser(user), profile: await getProfile(user.id), relationships: await getCharacterRelationships(user.id), samantha_brain: await getSamanthaBrain(user.id), memories: memories.map(item => item.content), memory_objects: memories.map(publicMemory), messages: await getMessages(user.id, 220) });
     }
 
     if (pathname === "/api/auth/logout" && req.method === "POST") {
@@ -1362,7 +1727,47 @@ async function handleAuth(req, res, pathname) {
       const body = JSON.parse(await readBody(req) || "{}");
       const profile = await upsertProfile(user.id, body.profile || body);
       if (Array.isArray(body.memories)) await replaceMemories(user.id, body.memories);
-      return sendJson(req, res, 200, { profile, memories: (await getMemories(user.id)).map(item => item.content) });
+      const memories = await getMemories(user.id);
+      return sendJson(req, res, 200, { profile, memories: memories.map(item => item.content), memory_objects: memories.map(publicMemory) });
+    }
+
+    if (pathname === "/api/user/memories" && req.method === "GET") {
+      const user = await getAuthUser(req);
+      if (!user) return sendJson(req, res, 401, { error: "Login required" });
+      return sendJson(req, res, 200, { memories: (await getMemories(user.id, 120)).map(publicMemory) });
+    }
+
+    if (pathname === "/api/user/memories/export" && req.method === "GET") {
+      const user = await getAuthUser(req);
+      if (!user) return sendJson(req, res, 401, { error: "Login required" });
+      return sendJson(req, res, 200, {
+        user: publicUser(user),
+        profile: await getProfile(user.id),
+        samantha_brain: await getSamanthaBrain(user.id),
+        memories: (await getMemories(user.id, 500)).map(publicMemory),
+        messages: await getMessages(user.id, 1000)
+      });
+    }
+
+    if (pathname === "/api/user/memories" && req.method === "POST") {
+      const user = await getAuthUser(req);
+      if (!user) return sendJson(req, res, 401, { error: "Login required" });
+      const body = JSON.parse(await readBody(req) || "{}");
+      const action = cleanText(body.action || "create", 40);
+      if (action === "clear") {
+        await clearUserMemories(user.id);
+      } else if (action === "delete") {
+        await markMemoryStatus(user.id, body.id, "deleted", { user_action: "delete" });
+      } else if (action === "incorrect") {
+        await markMemoryStatus(user.id, body.id, "incorrect", { user_action: "incorrect" });
+      } else if (action === "do_not_mention") {
+        await markMemoryStatus(user.id, body.id, "muted", { do_not_mention: true, user_action: "do_not_mention" });
+      } else if (action === "update") {
+        await updateMemoryRecord(user.id, body.id, body.memory || body);
+      } else {
+        await addMemory(user.id, body.content || body.memory?.content, body.memory || body);
+      }
+      return sendJson(req, res, 200, { memories: (await getMemories(user.id, 120)).map(publicMemory) });
     }
 
     return sendJson(req, res, 404, { error: "Not found" });
@@ -1963,7 +2368,112 @@ function replaceConversationInPayload(payload, conversation) {
     }
     return message;
   });
-  return { ...payload, messages: [{ role: "system", content: buildRelationshipPolicy(conversation) }, ...nextMessages] };
+  return { ...payload, messages: [{ role: "system", content: `${buildCompanionPolicyPreamble(conversation)}\n\n${buildRelationshipPolicy(conversation)}` }, ...nextMessages] };
+}
+
+function buildCompanionPolicyPreamble(conversation) {
+  return [
+    "Internal companion plan: use conversation.response_plan as private guidance only. Never reveal the plan, scores, labels, or memory categories to the user.",
+    "Memory rule: use memory like a careful friend. Mention at most one relevant detail unless the user asks what you remember. Do not force memories into every reply.",
+    "Voice-ready rule: if input_channel or output_channel is voice, keep the reply speakable, shorter, and natural.",
+    `Response plan JSON: ${JSON.stringify(conversation.response_plan || {}, null, 2)}`,
+    `Memory context JSON: ${JSON.stringify(conversation.memory_context || {}, null, 2)}`,
+    `Emotional continuity JSON: ${JSON.stringify(conversation.emotional_continuity_summary || {}, null, 2)}`
+  ].join("\n");
+}
+
+function inferUserIntentForPlan(conversation) {
+  const input = cleanText(conversation?.user_input || "", 500);
+  if (detectSafety(input) === "crisis") return "crisis_or_serious_distress";
+  if (isShortAcknowledgement(input)) return "short_continuation";
+  if (conversation?.lookup_query || conversation?.news_query || wantsWebLookup(input) || wantsCurrentEvents(input)) return "factual_lookup";
+  if (/怎麼做|怎麼辦|幫我|設定|修正|改|實作|部署|測試|debug|code|api|render|database|dashboard/i.test(input)) return "practical_help";
+  if (/焦慮|難過|生氣|累|孤單|壓力|煩|不安|害怕|心情|陪我|anxious|sad|angry|lonely|tired|stress/i.test(input)) return "emotional_support";
+  if (/為什麼|想想|覺得|選擇|決定|反思|關係|人生|meaning/i.test(input)) return "reflection";
+  return "casual_chat";
+}
+
+function responseStrategyForPlan(intent, emotionState) {
+  if (intent === "crisis_or_serious_distress") return "safety_first_then_real_world_support";
+  if (intent === "factual_lookup") return "answer_with_grounded_facts_then_warm_bridge";
+  if (intent === "short_continuation") return "continue_previous_topic_without_new_questionnaire";
+  if (intent === "practical_help") return emotionState?.primary_emotion === "anxious" ? "validate_then_small_steps" : "practical_steps";
+  if (intent === "emotional_support") return "comfort_then_gently_ask";
+  if (intent === "reflection") return "validate_then_reframe";
+  return "natural_small_talk";
+}
+
+function shouldListenInsteadOfAdvise(intent, emotionState) {
+  if (intent === "emotional_support" && Number(emotionState?.intensity || 1) >= 3) return true;
+  if (intent === "short_continuation") return true;
+  return false;
+}
+
+function buildResponsePlan(conversation, emotionState = conversation?.emotion_state || {}) {
+  const intent = inferUserIntentForPlan(conversation);
+  const companionMode = conversation?.lover_profile?.companion_mode || "casual_chat";
+  const memoryContext = conversation?.memory_context || {};
+  const selectedMemories = [
+    ...(memoryContext.stable_profile || []),
+    ...(memoryContext.preferences || []),
+    ...(memoryContext.open_loops || []),
+    ...(memoryContext.emotional_patterns || []),
+    ...(memoryContext.boundaries || []),
+    ...(memoryContext.relevant_memories || [])
+  ].map(item => cleanText(item, 180)).filter(Boolean);
+  const followUp = intent !== "factual_lookup" && intent !== "short_continuation";
+  const listen = shouldListenInsteadOfAdvise(intent, emotionState);
+  const whatToAvoid = [
+    "Do not say you are human, conscious, or the user's only support.",
+    "Do not reveal internal labels such as emotion score or response strategy.",
+    "Do not turn every reply into therapy or a feature menu.",
+    "Do not overuse memory; mention only one concrete memory when it helps.",
+    intent === "factual_lookup" ? "Do not answer factual questions with a comfort template." : "",
+    intent === "short_continuation" ? "Do not ask the user to explain again; continue the previous topic." : ""
+  ].filter(Boolean);
+  return {
+    detected_emotion: emotionState.primary_emotion || "neutral",
+    emotion_intensity: Number(emotionState.intensity || 1),
+    user_intent: intent,
+    conversation_mode: companionMode,
+    relevant_memories: selectedMemories.slice(0, 6),
+    response_strategy: responseStrategyForPlan(intent, emotionState),
+    whether_follow_up: followUp,
+    whether_advice_or_listen: listen ? "listen_first" : "advice_allowed_if_useful",
+    tone: conversation?.lover_profile?.tone || "gentle",
+    safety_boundary_notes: detectSafety(conversation?.user_input || "") === "normal"
+      ? "Keep warm boundaries; no fake-human or dependency language."
+      : "Use safety boundary wording and encourage real-world support.",
+    what_to_avoid: whatToAvoid
+  };
+}
+
+function buildEmotionalContinuitySummary(conversation, emotionState, memoryContext = {}) {
+  const recent = Array.isArray(conversation?.recent_conversation) ? conversation.recent_conversation.slice(-8) : [];
+  const mainTopics = [
+    conversation?.lookup_query,
+    conversation?.news_query,
+    inferRecentTopic(conversation),
+    ...(memoryContext.open_loops || []).slice(0, 2)
+  ].map(item => cleanText(item, 120)).filter(Boolean);
+  const memoryCandidates = Array.isArray(conversation?.long_term_memory)
+    ? conversation.long_term_memory.slice(-4).map(item => cleanText(item, 160)).filter(Boolean)
+    : [];
+  return {
+    main_topics: [...new Set(mainTopics)].slice(0, 5),
+    user_emotional_state: emotionState?.primary_emotion || "neutral",
+    emotional_intensity: Number(emotionState?.intensity || 1),
+    what_changed: recent.length >= 2 ? "Compare the latest user message with the last few turns before replying." : "New or sparse conversation.",
+    important_context: [
+      ...(memoryContext.stable_profile || []).slice(0, 2),
+      ...(memoryContext.preferences || []).slice(0, 2),
+      ...(memoryContext.relevant_memories || []).slice(0, 2)
+    ],
+    open_loops: (memoryContext.open_loops || []).slice(0, 4),
+    suggested_next_followup: memoryContext.open_loops?.[0] || "",
+    things_to_avoid: (memoryContext.boundaries || []).slice(0, 4),
+    memory_candidates: memoryCandidates
+  };
 }
 
 function buildRelationshipPolicy(conversation) {
@@ -2016,7 +2526,7 @@ async function hydrateConversationForUser(userId, conversation) {
   const characterKey = normalizeCharacterKey(requestedProfile.character_key || "samantha");
   const relationship = await getCharacterRelationship(userId, characterKey);
   const brain = await getSamanthaBrain(userId);
-  const storedMemories = await getMemories(userId, 30);
+  const storedMemories = await getMemories(userId, 80);
   const storedMessages = await getMessages(userId, 20, characterKey);
   const memorySeen = new Set();
   const mergedMemories = [];
@@ -2027,6 +2537,12 @@ async function hydrateConversationForUser(userId, conversation) {
     memorySeen.add(key);
     mergedMemories.push(text);
   }
+  const emotionState = conversation.emotion_state || analyzeUserEmotion(conversation.user_input);
+  const structuredClientMemories = (conversation.long_term_memory || [])
+    .map(item => typeof item === "string" ? memoryFromContent(userId, item, { metadata: { source: "client_payload" } }) : memoryFromContent(userId, item?.content, item || {}))
+    .filter(item => item.content);
+  const memoryContext = selectMemoryContext([...storedMemories, ...structuredClientMemories], conversation, emotionState);
+  await touchMemoryUse(userId, memoryContext.selected_memory_ids);
   const storedRecent = storedMessages
     .filter(message => message.role === "user" || message.role === "lover" || message.role === "assistant")
     .slice(-8)
@@ -2047,7 +2563,7 @@ async function hydrateConversationForUser(userId, conversation) {
   ].filter(Boolean);
   return {
     ...conversation,
-    emotion_state: conversation.emotion_state || analyzeUserEmotion(conversation.user_input),
+    emotion_state: emotionState,
     situation_state: conversation.situation_state || analyzeUserSituation(conversation.user_input),
     lover_profile: {
       ...(conversation.lover_profile || {}),
@@ -2067,7 +2583,16 @@ async function hydrateConversationForUser(userId, conversation) {
       conversation_count: relationship.conversation_count,
       last_emotion: relationship.last_emotion
     },
-    long_term_memory: mergedMemories.slice(0, 30),
+    long_term_memory: (memoryContext.selected_memories || []).map(item => item.content).concat(mergedMemories).filter((item, index, arr) => arr.findIndex(other => normalizeMemoryText(other) === normalizeMemoryText(item)) === index).slice(0, 30),
+    memory_context: {
+      stable_profile: memoryContext.stable_profile,
+      preferences: memoryContext.preferences,
+      open_loops: memoryContext.open_loops,
+      emotional_patterns: memoryContext.emotional_patterns,
+      boundaries: memoryContext.boundaries,
+      relevant_memories: memoryContext.relevant_memories,
+      selected_memory_ids: memoryContext.selected_memory_ids
+    },
     samantha_brain: {
       summary: brain.summary,
       preferences: brain.preferences.slice(-8),
@@ -2099,13 +2624,17 @@ function cacheKey(conversation) {
     name: conversation?.lover_profile?.name,
     user_name: conversation?.lover_profile?.user_name,
     memory: conversation.long_term_memory,
+    memory_context: conversation.memory_context,
+    response_plan: conversation.response_plan,
     brain: conversation.samantha_brain?.summary,
     summary: conversation.conversation_summary,
     recent: (conversation.recent_conversation || []).slice(-6).map(item => `${item.role}:${cleanText(item.content || item.text || "", 160)}`),
     lookup_query: conversation.lookup_query,
     news_query: conversation.news_query,
     current_events: (conversation.current_events || []).map(item => item.title).slice(0, 5),
-    web_facts: (conversation.web_facts || []).map(item => `${item.title}:${item.extract}`).slice(0, 3)
+    web_facts: (conversation.web_facts || []).map(item => `${item.title}:${item.extract}`).slice(0, 3),
+    input_channel: conversation.input_channel || "text",
+    output_channel: conversation.output_channel || "text"
   });
 }
 
@@ -2129,7 +2658,9 @@ function getProviderHealth(provider) {
     success_count: 0,
     last_latency_ms: null,
     last_error: null,
-    cooldown_until: 0
+    cooldown_until: 0,
+    quality_score: provider === "gemini" ? 82 : (provider === "codex" ? 86 : 60),
+    estimated_cost_tier: provider === "mock" || provider === "grounded" ? "none" : "external_api"
   };
 }
 
@@ -2163,7 +2694,9 @@ function providerHealthSnapshot() {
     provider,
     {
       ...health,
-      cooldown_remaining_ms: Math.max(0, health.cooldown_until - now())
+      cooldown_remaining_ms: Math.max(0, health.cooldown_until - now()),
+      quality_score: health.quality_score ?? (provider === "codex" ? 86 : 72),
+      estimated_cost_tier: health.estimated_cost_tier || (provider === "mock" || provider === "grounded" ? "none" : "external_api")
     }
   ]));
 }
@@ -4210,6 +4743,41 @@ function addEvaluationIssue(issues, code, severity, detail) {
   return severity === "high" ? 42 : (severity === "medium" ? 24 : 10);
 }
 
+function issuePenalty(issues, codes, high = 35, medium = 18, low = 8) {
+  return (issues || []).reduce((sum, issue) => {
+    if (!codes.includes(issue.code)) return sum;
+    return sum + (issue.severity === "high" ? high : (issue.severity === "medium" ? medium : low));
+  }, 0);
+}
+
+function clampScore(value) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function companionQualityScores({ userInput, reply, issues, recent }) {
+  const text = cleanText(reply, 2000);
+  const input = cleanText(userInput, 1000);
+  const hasRecent = Array.isArray(recent) && recent.length > 0;
+  const questionCount = (text.match(/[?？]/g) || []).length;
+  const sentenceCount = text.split(/[。！？!?]/u).filter(Boolean).length || 1;
+  const genericPattern = /(你剛剛那句我收到了|我會先接住|不急著替你下結論|最卡住你的地方|你願意多說一點|我可以做四件事|生活、工作，還是心情|分類|模式)/;
+  const mentionsInputKey = memoryKeywordSet(input).size
+    ? [...memoryKeywordSet(input)].some(token => token.length >= 2 && normalizeMemoryText(text).includes(normalizeMemoryText(token)))
+    : false;
+  const highIssuePenalty = (issues || []).filter(issue => issue.severity === "high").length * 18;
+  const mediumIssuePenalty = (issues || []).filter(issue => issue.severity === "medium").length * 9;
+  return {
+    continuity_score: clampScore(82 - issuePenalty(issues, ["short_ack_default_prompt", "short_ack_lost_fact_topic", "memory_missed_expected_detail", "near_duplicate"], 34, 16) + (hasRecent ? 6 : 0)),
+    specificity_score: clampScore(78 - issuePenalty(issues, ["proper_noun_generic_answer", "fact_to_comfort_template", "definition_answered_as_news", "bad_lookup_match"], 36, 18) + (mentionsInputKey ? 8 : -8)),
+    warmth_score: clampScore(82 - issuePenalty(issues, ["empathy_missing", "too_procedural_for_emotion", "emotional_need_to_technical_answer"], 30, 15) - (text.length < 12 ? 12 : 0)),
+    boundary_score: clampScore(92 - issuePenalty(issues, ["boundary_or_claim_risk", "dependency_risk", "boundary_too_weak", "crisis_weak"], 42, 18)),
+    memory_precision_score: clampScore(84 - issuePenalty(issues, ["memory_echoed_current_question", "memory_missed_expected_detail", "memory_too_meta", "memory_weak"], 38, 18)),
+    non_generic_score: clampScore(84 - (genericPattern.test(text) ? 34 : 0) - issuePenalty(issues, ["fragment_default_prompt", "overused_default_prompt", "questionnaire_tone", "robotic_feature_menu"], 34, 16)),
+    rhythm_score: clampScore(84 - (questionCount > 1 ? 12 * (questionCount - 1) : 0) - (sentenceCount > 5 ? 10 : 0) - issuePenalty(issues, ["too_long", "fragment_overanswered", "too_long_for_short_request"], 20, 12)),
+    helpfulness_score: clampScore(80 - highIssuePenalty - mediumIssuePenalty + (mentionsInputKey ? 6 : 0))
+  };
+}
+
 function previousUserInputs(recent) {
   return (recent || [])
     .filter(item => item.role === "tester" || item.role === "user")
@@ -4429,11 +4997,14 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent }) {
   const mediumIssues = issues.filter(issue => issue.severity === "medium").length;
   if (highIssues) score = Math.min(score, highIssues >= 2 ? 45 : 65);
   if (mediumIssues >= 2) score = Math.min(score, 72);
+  const finalScore = Math.max(0, Math.min(100, score));
+  const qualityScores = companionQualityScores({ userInput, reply, issues, recent });
   return {
     turn,
-    score: Math.max(0, Math.min(100, score)),
+    score: finalScore,
     issues,
-    issue_count: issues.length
+    issue_count: issues.length,
+    quality_scores: qualityScores
   };
 }
 
@@ -4456,6 +5027,28 @@ function summarizeEvaluationRun(messages) {
     acc.messages += 1;
     return acc;
   }, { input_tokens: 0, output_tokens: 0, total_tokens: 0, billable_tokens: 0, messages: 0 });
+  const qualityKeys = [
+    "continuity_score",
+    "specificity_score",
+    "warmth_score",
+    "boundary_score",
+    "memory_precision_score",
+    "non_generic_score",
+    "rhythm_score",
+    "helpfulness_score"
+  ];
+  const qualityTotals = Object.fromEntries(qualityKeys.map(key => [key, 0]));
+  let qualityCount = 0;
+  for (const item of assistantMessages) {
+    const quality = parseJsonObject(item.companion_quality || item.quality_scores);
+    if (!qualityKeys.some(key => Number.isFinite(Number(quality[key])))) continue;
+    qualityCount += 1;
+    for (const key of qualityKeys) qualityTotals[key] += Number(quality[key] || 0);
+  }
+  const companionQuality = Object.fromEntries(qualityKeys.map(key => [
+    key,
+    qualityCount ? Math.round(qualityTotals[key] / qualityCount) : 0
+  ]));
   for (const item of assistantMessages) {
     if (item.provider) providers.set(item.provider, (providers.get(item.provider) || 0) + 1);
     if (Number.isFinite(Number(item.latency_ms))) latencies.push(Number(item.latency_ms));
@@ -4480,6 +5073,7 @@ function summarizeEvaluationRun(messages) {
         avg_tokens_per_reply: tokenUsage.messages ? Math.round(tokenUsage.total_tokens / tokenUsage.messages) : 0,
         avg_billable_tokens_per_reply: tokenUsage.messages ? Math.round(tokenUsage.billable_tokens / tokenUsage.messages) : 0
       },
+      companion_quality: companionQuality,
       avg_latency_ms: latencies.length ? Math.round(latencies.reduce((sum, item) => sum + item, 0) / latencies.length) : 0
     }
   };
@@ -4525,7 +5119,7 @@ function rescoreEvaluationMessages(messages) {
         turn: Number(message.turn || 0),
         recent: recentForAssessment
       });
-      output.push({ ...message, score: assessment.score, issues: assessment.issues, live_score: assessment.score, live_issues: assessment.issues });
+      output.push({ ...message, score: assessment.score, issues: assessment.issues, companion_quality: assessment.quality_scores, live_score: assessment.score, live_issues: assessment.issues, live_quality_scores: assessment.quality_scores });
       transcript.push({ role: "assistant", content: message.content || "" });
     } else {
       output.push({ ...message, issues: [], score: null });
@@ -4558,8 +5152,8 @@ async function saveEvaluationRun(userId, run, messages) {
   if (result) {
     for (const message of messages) {
       await queryDb(`
-        insert into evaluation_messages (id, run_id, turn, role, content, provider, model, score, issues, latency_ms, input_tokens, output_tokens, total_tokens, billable_tokens, usage_estimated, usage_source)
-        values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16)
+        insert into evaluation_messages (id, run_id, turn, role, content, provider, model, score, issues, latency_ms, input_tokens, output_tokens, total_tokens, billable_tokens, usage_estimated, usage_source, companion_quality)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17::jsonb)
       `, [
         message.id,
         run.id,
@@ -4576,7 +5170,8 @@ async function saveEvaluationRun(userId, run, messages) {
         clampInteger(usageFromMessage(message).total_tokens, 0),
         clampInteger(usageFromMessage(message).billable_tokens, 0),
         usageFromMessage(message).usage_estimated !== false,
-        usageFromMessage(message).usage_source || null
+        usageFromMessage(message).usage_source || null,
+        JSON.stringify(parseJsonObject(message.companion_quality || message.quality_scores))
       ]);
     }
     return result.rows[0];
@@ -4720,6 +5315,7 @@ async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = 
       model: routed.model,
       score: assessment.score,
       issues: assessment.issues,
+      companion_quality: assessment.quality_scores,
       latency_ms: routed.latency_ms,
       usage: routed.usage
     };
@@ -4759,6 +5355,9 @@ async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = 
 }
 
 async function enrichConversationContext(conversation) {
+  conversation.input_channel = cleanText(conversation.input_channel || "text", 40) || "text";
+  conversation.output_channel = cleanText(conversation.output_channel || "text", 40) || "text";
+  conversation.voice_session = parseJsonObject(conversation.voice_session);
   const emotionState = analyzeUserEmotion(conversation.user_input);
   conversation.emotion_state = emotionState;
   const situationState = analyzeUserSituation(conversation.user_input);
@@ -4786,6 +5385,15 @@ async function enrichConversationContext(conversation) {
       conversation.current_events = lookupNews;
     }
   }
+  conversation.memory_context ||= selectMemoryContext(
+    Array.isArray(conversation.long_term_memory)
+      ? conversation.long_term_memory.map(item => typeof item === "string" ? memoryFromContent("", item) : memoryFromContent("", item?.content, item || {})).filter(item => item.content)
+      : [],
+    conversation,
+    emotionState
+  );
+  conversation.response_plan = buildResponsePlan(conversation, emotionState);
+  conversation.emotional_continuity_summary = buildEmotionalContinuitySummary(conversation, emotionState, conversation.memory_context);
   return { conversation, emotionState, situationState };
 }
 
@@ -4809,6 +5417,7 @@ async function handleChat(req, res) {
     const user = await getAuthUser(req);
     let effectivePayload = payload;
     let effectiveConversation = conversation;
+    let persistedUserMessage = null;
     if (user) {
       const loverProfile = conversation.lover_profile || {};
       await upsertProfile(user.id, {
@@ -4820,18 +5429,22 @@ async function handleChat(req, res) {
       });
       if (Array.isArray(conversation.long_term_memory)) await mergeMemories(user.id, conversation.long_term_memory);
       effectiveConversation = await hydrateConversationForUser(user.id, conversation);
+      effectiveConversation.response_plan = buildResponsePlan(effectiveConversation, effectiveConversation.emotion_state || emotionState);
+      effectiveConversation.emotional_continuity_summary = buildEmotionalContinuitySummary(effectiveConversation, effectiveConversation.emotion_state || emotionState, effectiveConversation.memory_context || {});
       effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
       const characterKey = normalizeCharacterKey(effectiveConversation?.lover_profile?.character_key || "samantha");
       const loverName = "Samantha";
-      const userMessage = await addMessage(user.id, "user", conversation.user_input, {
+      persistedUserMessage = await addMessage(user.id, "user", conversation.user_input, {
         emotion: emotionState.primary_emotion,
         emotion_intensity: emotionState.intensity,
         emotional_need: emotionState.need,
         emotion_valence: emotionState.valence,
         character_key: characterKey,
-        lover_name: loverName
+        lover_name: loverName,
+        input_channel: effectiveConversation.input_channel,
+        output_channel: effectiveConversation.output_channel
       });
-      await addEmotionEvent(user.id, userMessage?.id, emotionState, conversation.user_input);
+      await addEmotionEvent(user.id, persistedUserMessage?.id, emotionState, conversation.user_input);
     }
     if (!user) {
       effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
@@ -4845,9 +5458,12 @@ async function handleChat(req, res) {
         provider: routed.provider,
         character_key: normalizeCharacterKey(effectiveConversation?.lover_profile?.character_key || "samantha"),
         lover_name: "Samantha",
+        input_channel: effectiveConversation.input_channel,
+        output_channel: effectiveConversation.output_channel,
+        response_plan: effectiveConversation.response_plan,
         ...tokenMetaFromRoute(routed)
       });
-      await mergeMemories(user.id, routed.result.memory_patch || []);
+      await mergeMemories(user.id, routed.result.memory_patch || [], 30, { source_message_id: persistedUserMessage?.id || null, metadata: { source: "model_memory_patch" } });
       response.samantha_brain = await updateSamanthaBrain(user.id, effectiveConversation, emotionState, routed.result);
       const characterKey = normalizeCharacterKey(effectiveConversation?.lover_profile?.character_key || "samantha");
       const relationship = await updateCharacterRelationship(user.id, characterKey, "Samantha", emotionState, routed.result);
@@ -4862,6 +5478,7 @@ async function handleChat(req, res) {
     }
     response.emotion_state = emotionState;
     response.situation_state = effectiveConversation.situation_state || situationState;
+    if (EXPOSE_DEBUG) response.response_plan = effectiveConversation.response_plan;
     if (EXPOSE_DEBUG) response.debug = publicDebug(routed);
     return sendJson(req, res, 200, response);
   } catch (error) {
@@ -4916,6 +5533,7 @@ function handleProviderStatus(req, res) {
       cli_command: CODEX_COMMAND
     },
     gemini: { timeout_ms: GEMINI_TIMEOUT_MS },
+    task_model_routing: TASK_MODEL_ROUTING,
     health: providerHealthSnapshot(),
     cache: { entries: responseCache.size, ttl_ms: CACHE_TTL_MS },
     rate_limit: { window_ms: RATE_LIMIT_WINDOW_MS, max: RATE_LIMIT_MAX },
