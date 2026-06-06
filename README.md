@@ -92,8 +92,10 @@ Reply routing is intentionally layered, so not every answer is pure Google LLM o
 Admin dashboard:
 
 - Open `/admin.html` with an email listed in `ADMIN_EMAILS`.
-- Token panels show estimated context/reply tokens, inferred API tokens, provider totals, model totals, and the last 14 days of token usage.
+- Token panels call `/api/admin/token-usage` and show estimated context/reply tokens, inferred API tokens, provider totals, model totals, and the last 14 days of token usage.
+- When Gemini/OpenAI/Codex-compatible providers return usage metadata, Samantha stores the provider token counts. If a route has no provider usage, the dashboard falls back to estimation.
 - Grounded/rules replies record estimated text tokens but show `0` API tokens because they do not call a paid external model.
+- Evaluation runs can use `grounded`, `codex_only`, or `gemini_codex` route modes. Use `grounded` for large stable tests, `codex_only` when Gemini is rate-limited, and `gemini_codex` for slow production-route tests.
 
 Conversation modes:
 

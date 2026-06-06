@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>雲端戀人後台</title>
+  <title>Samantha Ops Dashboard</title>
   <style>
     :root {
       color-scheme: dark;
@@ -54,6 +54,7 @@
     }
     .main { padding: 22px; display: grid; gap: 18px; align-content: start; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .top-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-end; }
     h1, h2, p { margin: 0; }
     h1 { font-size: 24px; }
     h2 { font-size: 16px; margin-bottom: 12px; }
@@ -73,6 +74,9 @@
     .metric { display: grid; gap: 8px; min-height: 92px; }
     .metric span { color: var(--muted); font-size: 13px; }
     .metric strong { font-size: 28px; line-height: 1; }
+    .metric small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+    .metric.compact { min-height: 82px; }
+    .metric.compact strong { font-size: 24px; }
     .eval-metric {
       min-height: 76px;
       padding: 12px;
@@ -87,6 +91,9 @@
     .bar-row strong { color: var(--text); text-align: right; }
     .bar-row strong small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.25; }
     .token-bars .bar-row { grid-template-columns: minmax(120px, 170px) 1fr minmax(82px, 112px); }
+    .table-scroll { overflow-x: auto; }
+    .table-scroll table { min-width: 760px; }
+    .chat-table { min-width: 980px; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
     th { color: var(--muted); font-weight: 500; }
@@ -94,8 +101,18 @@
     .pill { display: inline-flex; min-height: 24px; align-items: center; padding: 0 8px; border-radius: 999px; background: var(--panel-soft); color: var(--muted); }
     .pill.danger { color: #ffd7d7; background: rgba(255,113,113,.16); }
     .pill.good { color: #bff6e9; background: rgba(68,214,201,.16); }
+    .pill.warn { color: #ffe4a8; background: rgba(240,201,109,.16); }
+    .pill.stack { min-height: 34px; align-items: flex-start; justify-content: center; flex-direction: column; gap: 2px; border-radius: 8px; }
+    .pill.stack small { font-size: 11px; color: var(--muted); }
+    .provider-cell { display: grid; gap: 4px; min-width: 116px; }
+    .provider-cell small { color: var(--muted); font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
+    .nowrap { white-space: nowrap; }
+    .right { text-align: right; }
+    .soft-title { color: var(--muted); font-size: 12px; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
     .toolbar label { min-width: 150px; }
+    .toolbar label.inline { min-width: auto; min-height: 42px; display: flex; grid-template-columns: none; align-items: center; gap: 8px; color: var(--text); }
+    .toolbar input[type="checkbox"] { width: 18px; min-height: 18px; accent-color: var(--teal); }
     .toolbar button { min-height: 42px; padding: 0 14px; }
     .issue-list { display: flex; flex-wrap: wrap; gap: 6px; }
     .score { font-size: 32px; line-height: 1; }
@@ -133,6 +150,7 @@
       .nav { border-right: 0; border-bottom: 1px solid var(--line); }
       .metrics, .two, .three { grid-template-columns: 1fr; }
       .topbar { align-items: flex-start; flex-direction: column; }
+      .top-actions { justify-content: flex-start; }
     }
   </style>
 </head>
@@ -155,7 +173,7 @@
   <main class="shell hidden" id="dashboard">
     <aside class="nav">
       <div class="brand">
-        <strong>雲端戀人</strong>
+        <strong>Samantha Ops</strong>
         <span id="adminName">工程後台</span>
       </div>
       <a href="/">使用者前台</a>
@@ -166,13 +184,17 @@
     <section class="main">
       <div class="topbar">
         <div>
-          <h1>使用狀況 Dashboard</h1>
+          <h1>Samantha Ops Dashboard</h1>
           <p class="muted" id="updatedAt">尚未更新</p>
         </div>
-        <span class="pill" id="statusPill">連線中</span>
+        <div class="top-actions">
+          <span class="pill" id="statusPill">連線中</span>
+          <span class="pill" id="tokenApiPill">Token API 未同步</span>
+        </div>
       </div>
 
       <section class="grid metrics" id="metrics"></section>
+      <section class="grid three" id="insights"></section>
 
       <section class="card">
         <div class="section-head">
@@ -187,7 +209,17 @@
             <select id="evalScenario"></select>
           </label>
           <label>輪數
-            <input id="evalTurns" type="number" min="30" max="120" value="90">
+            <input id="evalTurns" type="number" min="30" max="240" value="100">
+          </label>
+          <label>測試路由
+            <select id="evalProviderMode">
+              <option value="grounded">省 token grounded</option>
+              <option value="codex_only">真實 LLM：Codex only</option>
+              <option value="gemini_codex">真實 LLM：Gemini -> Codex</option>
+            </select>
+          </label>
+          <label>每輪間隔 ms
+            <input id="evalDelayMs" type="number" min="0" max="60000" value="0">
           </label>
           <button class="primary" id="runScriptedBtn">跑固定劇本</button>
           <button class="ghost" id="runLlmBtn">跑 LLM 測試官</button>
@@ -206,10 +238,12 @@
         </div>
         <div class="card">
           <h2>最新逐輪對話</h2>
-          <table>
-            <thead><tr><th>輪</th><th>角色</th><th>內容</th><th>分數</th></tr></thead>
-            <tbody id="evalMessageRows"></tbody>
-          </table>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>輪</th><th>角色</th><th>Provider</th><th>Tokens</th><th>內容</th><th>分數</th></tr></thead>
+              <tbody id="evalMessageRows"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
@@ -229,8 +263,9 @@
           <div class="section-head">
             <div>
               <h2>Token 消耗</h2>
-              <p class="muted">估算總量看上下文大小；API token 代表推定外部模型消耗。</p>
+              <p class="muted">來自 /api/admin/token-usage。provider 有回 usage 時用真值，沒有時才估算。</p>
             </div>
+            <span class="pill" id="tokenHealthPill">計算中</span>
           </div>
           <div class="grid three" id="tokenMetrics"></div>
         </div>
@@ -282,10 +317,12 @@
       <section class="grid two">
         <div class="card">
           <h2>最近聊天</h2>
-          <table>
-            <thead><tr><th>時間</th><th>使用者</th><th>角色</th><th>內容</th><th>狀態</th></tr></thead>
-            <tbody id="messageRows"></tbody>
-          </table>
+          <div class="table-scroll">
+            <table class="chat-table">
+              <thead><tr><th>時間</th><th>使用者</th><th>角色</th><th>Provider</th><th>Tokens</th><th>內容</th><th>狀態</th></tr></thead>
+              <tbody id="messageRows"></tbody>
+            </table>
+          </div>
         </div>
         <div class="card">
           <h2>最近註冊</h2>
@@ -304,6 +341,7 @@
     const num = value => Number(value || 0).toLocaleString();
     const escapeHtml = text => String(text ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
     let evaluationScenarios = {};
+    let lastTokenData = null;
 
     async function request(path, options = {}) {
       const response = await fetch(path, {
@@ -354,6 +392,40 @@
       `).join("");
     }
 
+    function percent(part, total) {
+      const denominator = Number(total || 0);
+      if (!denominator) return "0%";
+      return `${Math.round(Number(part || 0) / denominator * 100)}%`;
+    }
+
+    function latestTime(rows) {
+      const first = (rows || [])[0];
+      return first?.created_at ? fmt(first.created_at) : "尚無";
+    }
+
+    function renderInsights(data) {
+      const overview = data.overview || {};
+      const usage = lastTokenData?.token_usage || data.token_usage || {};
+      const topProvider = (lastTokenData?.token_providers || data.token_providers || [])[0];
+      const apiRatio = percent(usage.billable_tokens, usage.total_tokens);
+      const replyRatio = overview.user_messages ? `${Math.round(Number(overview.lover_messages || 0) / Number(overview.user_messages || 1) * 100)}%` : "0%";
+      const items = [
+        ["API Token 占比", apiRatio, `可計費 ${num(usage.billable_tokens)} / 總量 ${num(usage.total_tokens)}`],
+        ["主要 Provider", topProvider?.provider || "unknown", `${num(topProvider?.messages)} 則，API ${num(topProvider?.billable_tokens)}`],
+        ["平均回覆 Token", num(usage.avg_tokens_per_reply), `API 平均 ${num(usage.avg_billable_tokens_per_reply)}`],
+        ["回覆覆蓋率", replyRatio, `${num(overview.lover_messages)} AI 回覆 / ${num(overview.user_messages)} 使用者訊息`],
+        ["風險訊號", num(Number(overview.crisis_messages || 0) + Number(overview.dependency_risk_messages || 0)), `危機 ${num(overview.crisis_messages)}，依賴 ${num(overview.dependency_risk_messages)}`],
+        ["最近活動", latestTime(data.recent_messages), "最近一筆聊天紀錄"]
+      ];
+      $("#insights").innerHTML = items.map(([label, value, hint]) => `
+        <div class="card metric compact">
+          <span>${label}</span>
+          <strong>${escapeHtml(value)}</strong>
+          <small>${escapeHtml(hint)}</small>
+        </div>
+      `).join("");
+    }
+
     function renderBars(selector, rows, labelKey) {
       const max = Math.max(1, ...rows.map(row => Number(row.messages || 0)));
       $(selector).innerHTML = rows.length ? rows.map(row => {
@@ -383,6 +455,9 @@
 
     function renderTokenDashboard(data) {
       const usage = data.token_usage || {};
+      const apiRatio = Number(usage.total_tokens || 0) ? Number(usage.billable_tokens || 0) / Number(usage.total_tokens || 1) : 0;
+      $("#tokenHealthPill").textContent = `API 占比 ${percent(usage.billable_tokens, usage.total_tokens)}`;
+      $("#tokenHealthPill").className = `pill ${apiRatio > 0.7 ? "warn" : "good"}`;
       const items = [
         ["估算總 Tokens", usage.total_tokens],
         ["推定 API Tokens", usage.billable_tokens],
@@ -397,6 +472,20 @@
       renderTokenBars("#tokenProviderBars", data.token_providers || [], "provider");
       renderTokenBars("#tokenDailyBars", data.token_daily || [], "day");
       renderTokenBars("#tokenModelBars", data.token_models || [], "model");
+    }
+
+    async function loadTokenUsage(fallbackData) {
+      try {
+        lastTokenData = await request("/api/admin/token-usage");
+        renderTokenDashboard(lastTokenData);
+        $("#tokenApiPill").textContent = "Token API 已同步";
+        $("#tokenApiPill").className = "pill good";
+      } catch (error) {
+        lastTokenData = fallbackData || null;
+        renderTokenDashboard(fallbackData || {});
+        $("#tokenApiPill").textContent = `Token API 失敗：${error.message}`;
+        $("#tokenApiPill").className = "pill warn";
+      }
     }
 
     function scoreClass(score) {
@@ -427,7 +516,8 @@
         ["高風險問題", Number(latest.metrics?.high_issues || 0).toLocaleString()],
         ["平均延遲", `${Number(latest.metrics?.avg_latency_ms || 0).toLocaleString()} ms`],
         ["模式", latest.mode === "llm" ? "LLM 測試官" : "固定劇本"],
-        ["場景", evaluationScenarios[latest.scenario]?.label || latest.scenario]
+        ["場景", evaluationScenarios[latest.scenario]?.label || latest.scenario],
+        ["路由", routeLabel(latest.metrics?.provider_mode || (latest.metrics?.skip_naturalize ? "grounded" : "gemini_codex"))]
       ] : [
         ["最近分數", `<span class="score">-</span>`],
         ["測試輪數", "0"],
@@ -463,10 +553,12 @@
         <tr>
           <td>${Number(item.turn || 0)}</td>
           <td>${escapeHtml(item.role)}</td>
+          <td>${providerCell({ ...item, role: item.role === "assistant" ? "lover" : item.role })}</td>
+          <td class="right">${tokenCell({ ...item, role: item.role === "assistant" ? "lover" : item.role })}</td>
           <td class="content">${escapeHtml(item.content).slice(0, 240)}${item.role === "assistant" ? issuePills(item.issues) : ""}</td>
           <td>${item.score == null ? "-" : `<span class="score ${scoreClass(item.score)}" style="font-size:18px;">${Number(item.score)}</span>`}</td>
         </tr>
-      `).join("") || `<tr><td colspan="4" class="muted">跑一次測試後會顯示逐輪對話。</td></tr>`;
+      `).join("") || `<tr><td colspan="6" class="muted">跑一次測試後會顯示逐輪對話。</td></tr>`;
     }
 
     async function loadEvaluations() {
@@ -476,20 +568,24 @@
 
     function syncEvaluationTurns() {
       $("#evalTurns").min = "30";
-      $("#evalTurns").max = "120";
-      $("#evalTurns").value = String(Math.max(30, Math.min(Number($("#evalTurns").value || 90), 120)));
+      $("#evalTurns").max = "240";
+      $("#evalTurns").value = String(Math.max(30, Math.min(Number($("#evalTurns").value || 100), 240)));
     }
 
     async function runEvaluation(mode) {
       const scenario = $("#evalScenario").value || "core";
-      const turns = Math.max(30, Math.min(Number($("#evalTurns").value || 90), 120));
+      const turns = Math.max(30, Math.min(Number($("#evalTurns").value || 100), 240));
+      const providerMode = $("#evalProviderMode").value || "grounded";
+      const interTurnDelayMs = Math.max(0, Math.min(Number($("#evalDelayMs").value || 0), 60000));
       $("#runScriptedBtn").disabled = true;
       $("#runLlmBtn").disabled = true;
-      $("#evalStatus").textContent = mode === "llm" ? "LLM 測試官正在和 Samantha 對話..." : "固定劇本正在測試 Samantha...";
+      $("#evalStatus").textContent = mode === "llm"
+        ? `LLM 測試官正在和 Samantha 對話...（${routeLabel(providerMode)}）`
+        : `固定劇本正在測試 Samantha...（${routeLabel(providerMode)}）`;
       try {
         const data = await request("/api/admin/evaluations/run", {
           method: "POST",
-          body: JSON.stringify({ mode, scenario, turns })
+          body: JSON.stringify({ mode, scenario, turns, provider_mode: providerMode, inter_turn_delay_ms: interTurnDelayMs })
         });
         renderEvaluationDashboard(data.dashboard || data);
         $("#evalStatus").textContent = `完成：${data.run.summary}`;
@@ -504,9 +600,11 @@
     function renderTables(data) {
       $("#messageRows").innerHTML = data.recent_messages.map(item => `
         <tr>
-          <td>${fmt(item.created_at)}</td>
+          <td class="nowrap">${fmt(item.created_at)}</td>
           <td>${escapeHtml(item.email || item.display_name || "-")}</td>
           <td>${escapeHtml(item.role)}</td>
+          <td>${providerCell(item)}</td>
+          <td class="right">${tokenCell(item)}</td>
           <td class="content">${escapeHtml(item.content).slice(0, 260)}</td>
           <td><span class="pill ${item.safety === "crisis" ? "danger" : ""}">${escapeHtml(item.safety || item.provider || "-")}</span></td>
         </tr>
@@ -535,6 +633,36 @@
       `).join("") || `<tr><td colspan="5" class="muted">尚無情緒事件</td></tr>`;
     }
 
+    function routeLabel(mode) {
+      if (mode === "codex_only") return "真實 LLM：Codex only";
+      if (mode === "gemini_codex") return "真實 LLM：Gemini -> Codex";
+      return "省 token grounded";
+    }
+
+    function syncProviderDelay() {
+      const mode = $("#evalProviderMode").value;
+      if (mode === "gemini_codex" && Number($("#evalDelayMs").value || 0) < 12000) $("#evalDelayMs").value = "12000";
+      if (mode === "codex_only" && Number($("#evalDelayMs").value || 0) === 12000) $("#evalDelayMs").value = "3000";
+      if (mode === "grounded") $("#evalDelayMs").value = "0";
+    }
+
+    function providerCell(item) {
+      if (item.role !== "lover") return `<span class="soft-title">-</span>`;
+      return `
+        <span class="provider-cell">
+          <span class="pill">${escapeHtml(item.provider || "unknown")}</span>
+          <small>${escapeHtml(item.model || "unknown")}${item.latency_ms ? ` · ${num(item.latency_ms)}ms` : ""}</small>
+        </span>
+      `;
+    }
+
+    function tokenCell(item) {
+      if (item.role !== "lover") return `<span class="soft-title">-</span>`;
+      const total = Number(item.total_tokens || 0);
+      const billable = Number(item.billable_tokens || 0);
+      return `<span class="pill stack ${billable > 0 ? "warn" : "good"}">${num(total)}<small>API ${num(billable)}</small></span>`;
+    }
+
     async function loadStats() {
       const data = await request("/api/admin/stats");
       $("#loginPanel").classList.add("hidden");
@@ -543,9 +671,10 @@
       $("#statusPill").textContent = "已連線";
       $("#updatedAt").textContent = `更新時間：${fmt(Date.now())}`;
       renderMetrics(data.overview);
+      await loadTokenUsage(data);
+      renderInsights(data);
       renderBars("#dailyBars", data.daily, "day");
       renderBars("#providerBars", data.providers, "provider");
-      renderTokenDashboard(data);
       renderBars("#emotionBars", (data.emotion_distribution || []).map(item => ({ emotion: item.emotion, messages: item.events })), "emotion");
       renderBars("#emotionDailyBars", (data.emotion_daily || []).map(item => ({ day: item.day, messages: item.avg_intensity })), "day");
       renderTables(data);
@@ -561,6 +690,7 @@
     $("#runScriptedBtn").addEventListener("click", () => runEvaluation("scripted"));
     $("#runLlmBtn").addEventListener("click", () => runEvaluation("llm"));
     $("#evalScenario").addEventListener("change", syncEvaluationTurns);
+    $("#evalProviderMode").addEventListener("change", syncProviderDelay);
     loadStats().catch(error => {
       $("#loginStatus").textContent = error.message === "Admin access required"
         ? "目前登入帳號不是管理員。"

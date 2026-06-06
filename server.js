@@ -349,6 +349,13 @@ async function initDb() {
       latency_ms integer,
       created_at timestamptz not null default now()
     );
+    alter table evaluation_messages add column if not exists model text;
+    alter table evaluation_messages add column if not exists input_tokens integer not null default 0;
+    alter table evaluation_messages add column if not exists output_tokens integer not null default 0;
+    alter table evaluation_messages add column if not exists total_tokens integer not null default 0;
+    alter table evaluation_messages add column if not exists billable_tokens integer not null default 0;
+    alter table evaluation_messages add column if not exists usage_estimated boolean not null default true;
+    alter table evaluation_messages add column if not exists usage_source text;
     create index if not exists messages_user_created_idx on messages(user_id, created_at);
     create index if not exists messages_user_character_created_idx on messages(user_id, character_key, created_at);
     create index if not exists messages_token_usage_idx on messages(provider, created_at);
@@ -1472,6 +1479,18 @@ function tokenMetaFromRoute(route) {
   };
 }
 
+function usageFromMessage(item = {}) {
+  if (item.usage) return item.usage;
+  return {
+    input_tokens: clampInteger(item.input_tokens, 0),
+    output_tokens: clampInteger(item.output_tokens, 0),
+    total_tokens: clampInteger(item.total_tokens, 0),
+    billable_tokens: clampInteger(item.billable_tokens, 0),
+    usage_estimated: item.usage_estimated !== false,
+    usage_source: item.usage_source || null
+  };
+}
+
 function sumTokenRows(rows) {
   const tokenRows = (rows || []).filter(row => row.role === "lover");
   const totals = tokenRows.reduce((acc, row) => {
@@ -1710,6 +1729,36 @@ async function getAdminStats() {
   };
 }
 
+async function getAdminTokenUsage() {
+  const stats = await getAdminStats();
+  const recentTokenMessages = (stats.recent_messages || [])
+    .filter(message => message.role === "lover")
+    .slice(0, 80)
+    .map(message => ({
+      id: message.id,
+      created_at: message.created_at,
+      email: message.email,
+      display_name: message.display_name,
+      provider: message.provider || "unknown",
+      model: message.model || "unknown",
+      content: message.content,
+      input_tokens: clampInteger(message.input_tokens, 0),
+      output_tokens: clampInteger(message.output_tokens, 0),
+      total_tokens: clampInteger(message.total_tokens, 0),
+      billable_tokens: clampInteger(message.billable_tokens, 0),
+      usage_estimated: message.usage_estimated !== false,
+      usage_source: message.usage_source || null,
+      latency_ms: clampInteger(message.latency_ms, 0)
+    }));
+  return {
+    token_usage: stats.token_usage,
+    token_daily: stats.token_daily,
+    token_providers: stats.token_providers,
+    token_models: stats.token_models,
+    recent_token_messages: recentTokenMessages
+  };
+}
+
 async function handleAdmin(req, res, pathname) {
   if (req.method === "OPTIONS") return sendJson(req, res, 200, { ok: true });
   const user = await getAuthUser(req);
@@ -1718,6 +1767,9 @@ async function handleAdmin(req, res, pathname) {
   try {
     if (pathname === "/api/admin/stats" && req.method === "GET") {
       return sendJson(req, res, 200, { user: publicUser(user), ...(await getAdminStats()) });
+    }
+    if (pathname === "/api/admin/token-usage" && req.method === "GET") {
+      return sendJson(req, res, 200, { user: publicUser(user), ...(await getAdminTokenUsage()) });
     }
     if (pathname === "/api/admin/evaluations" && req.method === "GET") {
       return sendJson(req, res, 200, {
@@ -1732,7 +1784,10 @@ async function handleAdmin(req, res, pathname) {
       const mode = body.mode === "llm" ? "llm" : "scripted";
       const scenario = EVALUATION_SCENARIOS[body.scenario] ? body.scenario : "core";
       const turns = Number(body.turns || MIN_EVALUATION_TURNS);
-      const result = await runEvaluation({ user, mode, scenarioKey: scenario, turns });
+      const providerMode = ["grounded", "codex_only", "gemini_codex"].includes(body.provider_mode) ? body.provider_mode : "grounded";
+      const skipNaturalize = providerMode === "grounded";
+      const interTurnDelayMs = Math.max(0, Math.min(Number(body.inter_turn_delay_ms || 0), 60_000));
+      const result = await runEvaluation({ user, mode, scenarioKey: scenario, turns, skipNaturalize, providerMode, interTurnDelayMs });
       return sendJson(req, res, 200, { user: publicUser(user), ...result, dashboard: await getEvaluationDashboard() });
     }
     return sendJson(req, res, 404, { error: "Not found" });
@@ -2258,11 +2313,17 @@ function wantsCurrentEvents(input) {
 function currentEventsReply(conversation, input, userName) {
   const events = Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 4) : [];
   if (!wantsCurrentEvents(input) && !(conversation.news_query && events.length)) return "";
-  if (!events.length) {
-    return `${userName}，我剛剛沒有拿到可靠的即時新聞來源，所以這輪先不硬編。先把空白留著，會比把舊消息講成最新消息更誠實。`;
-  }
   const query = conversation.news_query || "";
   const facts = Array.isArray(conversation.web_facts) ? conversation.web_facts.filter(item => item?.extract) : [];
+  if (!events.length) {
+    if (/賴清德/.test(input)) {
+      return `${userName}，先放一個可靠背景：賴清德是中華民國總統，曾任副總統、行政院長與台南市長。至於「最近新聞」，我這輪沒有拿到可靠的即時來源，所以不把舊消息硬講成最新消息；我們可以晚一點再查一次。`;
+    }
+    if (facts.length) {
+      return `${userName}，先放一個背景：${facts[0].title}大致是${readableFactExtract(facts[0])} 但我這輪沒有拿到可靠的即時新聞來源，所以最近動態先不硬編。`;
+    }
+    return `${userName}，我剛剛沒有拿到可靠的即時新聞來源，所以這輪先不硬編。先把空白留著，會比把舊消息講成最新消息更誠實。`;
+  }
   const background = facts.length && /是誰|是什麼人|誰/.test(input)
     ? `先放一個背景：${facts[0].title}大致是${readableFactExtract(facts[0])} `
     : "";
@@ -3075,7 +3136,7 @@ function buildGroundedNaturalizationPayload(conversation, groundedResult) {
 async function naturalizeGroundedResult(groundedResult, conversation, attempts) {
   if (!shouldNaturalizeGrounded(conversation, groundedResult)) return null;
   const payload = buildGroundedNaturalizationPayload(conversation, groundedResult);
-  const realProviderOrder = PROVIDER_ORDER.filter(provider => provider !== "mock");
+  const realProviderOrder = (conversation.provider_order_override || PROVIDER_ORDER).filter(provider => provider !== "mock");
   for (const provider of realProviderOrder) {
     const naturalizeKey = `${provider}:naturalize`;
     const health = getProviderHealth(naturalizeKey);
@@ -3546,7 +3607,8 @@ async function routeProviders(payload, conversation, options = {}) {
   const attempts = [];
   const groundedResult = groundedModel(conversation);
   if (groundedResult) {
-    const naturalized = await naturalizeGroundedResult(groundedResult, conversation, attempts);
+    const naturalizeConversation = options.providerOrder ? { ...conversation, provider_order_override: options.providerOrder } : conversation;
+    const naturalized = options.skipNaturalize ? null : await naturalizeGroundedResult(groundedResult, naturalizeConversation, attempts);
     if (naturalized) {
       const value = { ...naturalized, cache_hit: false };
       setCachedResponse(conversation, value);
@@ -3562,7 +3624,7 @@ async function routeProviders(payload, conversation, options = {}) {
       cache_hit: false
     }, payload);
   }
-  const realProviderOrder = PROVIDER_ORDER.filter(provider => provider !== "mock");
+  const realProviderOrder = (options.providerOrder || PROVIDER_ORDER).filter(provider => provider !== "mock");
   for (const provider of realProviderOrder) {
     const health = getProviderHealth(provider);
     if (health.cooldown_until > now()) {
@@ -3902,7 +3964,7 @@ function loadEvaluationBankPrompts(limit = 240) {
   }
 }
 
-const QUESTION_BANK_SAMPLE_PROMPTS = loadEvaluationBankPrompts(240);
+const QUESTION_BANK_SAMPLE_PROMPTS = loadEvaluationBankPrompts(600);
 if (QUESTION_BANK_SAMPLE_PROMPTS.length) {
   EVALUATION_SCENARIOS.question_bank = {
     label: "10000 題庫抽樣",
@@ -3911,7 +3973,7 @@ if (QUESTION_BANK_SAMPLE_PROMPTS.length) {
   };
 }
 const MIN_EVALUATION_TURNS = 30;
-const MAX_EVALUATION_TURNS = 120;
+const MAX_EVALUATION_TURNS = 240;
 const EXTENDED_EVALUATION_PROMPTS = [
   "我今天第一次跟你講話，有點不知道要說什麼。",
   "我剛去 AIEXPO 逛了一下，你知道那是什麼嗎？",
@@ -3947,6 +4009,12 @@ const EXTENDED_EVALUATION_PROMPTS = [
 
 function getEvaluationScenario(key) {
   return EVALUATION_SCENARIOS[key] || EVALUATION_SCENARIOS.core;
+}
+
+function providerOrderForEvaluation(mode) {
+  if (mode === "codex_only") return ["codex"];
+  if (mode === "gemini_codex") return ["gemini", "codex"];
+  return null;
 }
 
 function buildScriptedPromptList(scenario, targetTurns = MIN_EVALUATION_TURNS) {
@@ -4188,7 +4256,7 @@ function summarizeEvaluationRun(messages) {
   const providers = new Map();
   const latencies = [];
   const tokenUsage = assistantMessages.reduce((acc, item) => {
-    const usage = item.usage || {};
+    const usage = usageFromMessage(item);
     acc.input_tokens += clampInteger(usage.input_tokens, 0);
     acc.output_tokens += clampInteger(usage.output_tokens, 0);
     acc.total_tokens += clampInteger(usage.total_tokens, 0);
@@ -4298,9 +4366,26 @@ async function saveEvaluationRun(userId, run, messages) {
   if (result) {
     for (const message of messages) {
       await queryDb(`
-        insert into evaluation_messages (id, run_id, turn, role, content, provider, score, issues, latency_ms)
-        values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
-      `, [message.id, run.id, message.turn, message.role, message.content, message.provider || null, message.score ?? null, JSON.stringify(message.issues || []), message.latency_ms ?? null]);
+        insert into evaluation_messages (id, run_id, turn, role, content, provider, model, score, issues, latency_ms, input_tokens, output_tokens, total_tokens, billable_tokens, usage_estimated, usage_source)
+        values ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15, $16)
+      `, [
+        message.id,
+        run.id,
+        message.turn,
+        message.role,
+        message.content,
+        message.provider || null,
+        message.model || null,
+        message.score ?? null,
+        JSON.stringify(message.issues || []),
+        message.latency_ms ?? null,
+        clampInteger(usageFromMessage(message).input_tokens, 0),
+        clampInteger(usageFromMessage(message).output_tokens, 0),
+        clampInteger(usageFromMessage(message).total_tokens, 0),
+        clampInteger(usageFromMessage(message).billable_tokens, 0),
+        usageFromMessage(message).usage_estimated !== false,
+        usageFromMessage(message).usage_source || null
+      ]);
     }
     return result.rows[0];
   }
@@ -4394,7 +4479,7 @@ function evaluationMemoryFromUserInput(input) {
   return "";
 }
 
-async function runEvaluation({ user, mode, scenarioKey, turns }) {
+async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = false, providerMode = "grounded", interTurnDelayMs = 0 }) {
   const scenario = getEvaluationScenario(scenarioKey);
   const scriptedPrompts = buildScriptedPromptList(scenario, Math.max(MIN_EVALUATION_TURNS, Number(turns || MIN_EVALUATION_TURNS)));
   const requestedTurns = Math.max(MIN_EVALUATION_TURNS, Number(turns || MIN_EVALUATION_TURNS));
@@ -4426,7 +4511,11 @@ async function runEvaluation({ user, mode, scenarioKey, turns }) {
     };
     await enrichConversationContext(conversation);
     const payload = replaceConversationInPayload(buildEvaluationPayload(conversation), conversation);
-    const routed = await routeProviders(payload, conversation, { mockFallbackDelayMs: 0 });
+    const routed = await routeProviders(payload, conversation, {
+      mockFallbackDelayMs: 0,
+      skipNaturalize,
+      providerOrder: providerOrderForEvaluation(providerMode)
+    });
     const reply = routed.result.reply;
     const assessment = evaluateSamanthaReply({ userInput, reply, routed, turn: turn + 1, recent: transcript });
     const userMessage = { id: uid(), turn: turn + 1, role: "tester", content: userInput, issues: [], score: null };
@@ -4436,6 +4525,7 @@ async function runEvaluation({ user, mode, scenarioKey, turns }) {
       role: "assistant",
       content: reply,
       provider: routed.provider,
+      model: routed.model,
       score: assessment.score,
       issues: assessment.issues,
       latency_ms: routed.latency_ms,
@@ -4455,6 +4545,7 @@ async function runEvaluation({ user, mode, scenarioKey, turns }) {
       if (!longTermMemory.some(item => normalizeMemoryText(item) === key)) longTermMemory.push(text);
     }
     while (longTermMemory.length > 50) longTermMemory.shift();
+    if (interTurnDelayMs > 0 && turn < maxTurns - 1) await sleep(interTurnDelayMs);
   }
   const summary = summarizeEvaluationRun(messages);
   const run = {
@@ -4468,6 +4559,9 @@ async function runEvaluation({ user, mode, scenarioKey, turns }) {
     issues: summary.issues,
     metrics: summary.metrics
   };
+  run.metrics.skip_naturalize = Boolean(skipNaturalize);
+  run.metrics.provider_mode = providerMode;
+  run.metrics.inter_turn_delay_ms = clampInteger(interTurnDelayMs, 0);
   await saveEvaluationRun(user?.id, run, messages);
   return { run, messages };
 }
