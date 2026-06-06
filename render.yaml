@@ -9,11 +9,13 @@ services:
       - key: NODE_ENV
         value: production
       - key: PROVIDER_ORDER
-        value: gemini,codex,mock
+        value: gemini,codex
       - key: ENABLE_CODEX_PROVIDER
         value: "1"
       - key: ENABLE_MOCK_FALLBACK
-        value: "1"
+        value: "0"
+      - key: ENABLE_EXPERIMENTAL_PROVIDERS
+        value: "0"
       - key: EXPOSE_DEBUG
         value: "0"
       - key: ENABLE_PROVIDER_STATUS
@@ -28,6 +30,8 @@ services:
         sync: false
       - key: GEMINI_MODEL
         value: gemini-2.5-flash
+      - key: GEMINI_MODELS
+        value: gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-flash-lite-latest
       - key: PROVIDER_TIMEOUT_MS
         value: "60000"
       - key: GEMINI_TIMEOUT_MS

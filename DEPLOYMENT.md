@@ -39,9 +39,10 @@ Set these in Render Dashboard, not in git:
 
 ```text
 NODE_ENV=production
-PROVIDER_ORDER=gemini,codex,mock
+PROVIDER_ORDER=gemini,codex
 ENABLE_CODEX_PROVIDER=1
-ENABLE_MOCK_FALLBACK=1
+ENABLE_MOCK_FALLBACK=0
+ENABLE_EXPERIMENTAL_PROVIDERS=0
 ALLOWED_ORIGINS=https://cloud-lover-prototype.onrender.com
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
@@ -50,6 +51,7 @@ ADMIN_EMAILS=you@example.com
 
 GEMINI_API_KEY=your_new_gemini_key
 GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODELS=gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-flash-lite-latest
 
 CODEX_BACKEND=api
 CODEX_API_KEY=your_openai_api_key
@@ -72,7 +74,9 @@ Important: rotate any provider keys that were pasted into chat before using prod
 
 Production fallback should use `CODEX_BACKEND=api` or `CODEX_BACKEND=worker`. Render cannot use the Codex login from your local desktop app, so `CODEX_BACKEND=api` needs `CODEX_API_KEY` or `OPENAI_API_KEY`.
 
-`GEMINI_TIMEOUT_MS=12000` keeps the first provider fast. If Gemini does not answer quickly, the request moves to Codex. `CODEX_TIMEOUT_MS=60000` gives Codex up to one minute. `MOCK_FALLBACK_DELAY_MS=60000` prevents mock from appearing instantly when providers fail fast because a key or backend is missing.
+`GEMINI_TIMEOUT_MS=12000` keeps each Gemini attempt bounded. `GEMINI_MODELS` lets the app try several Google models before moving to Codex. `CODEX_TIMEOUT_MS=60000` gives Codex up to one minute. Keep `ENABLE_MOCK_FALLBACK=0` for production and quality testing so weak mock replies never appear as Samantha.
+
+Keep `ENABLE_EXPERIMENTAL_PROVIDERS=0` for the Samantha production path. Old OpenRouter/NVIDIA/Groq variables may exist in local machines or dashboards, but they will not enter routing unless this is explicitly enabled.
 
 Optional local CLI fallback:
 
@@ -130,9 +134,10 @@ ALLOWED_ORIGINS=https://app.yourdomain.com
 - [ ] `ENABLE_PROVIDER_STATUS=0`
 - [ ] `DATABASE_URL` points to Neon or another long-lived Postgres database
 - [ ] `ADMIN_EMAILS` includes only trusted dashboard users
-- [ ] `PROVIDER_ORDER=gemini,codex,mock`
+- [ ] `PROVIDER_ORDER=gemini,codex`
 - [ ] `ENABLE_CODEX_PROVIDER=1`
-- [ ] `ENABLE_MOCK_FALLBACK=1`
+- [ ] `ENABLE_MOCK_FALLBACK=0`
+- [ ] `ENABLE_EXPERIMENTAL_PROVIDERS=0`
 - [ ] Provider dashboards have budget/spend limits
 - [ ] App tested with normal and safety-risk messages
 - [ ] Custom domain DNS verified

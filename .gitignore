@@ -2,6 +2,7 @@
 .env.local
 *.log
 .codex-provider-*.json
+.codex-provider-*.prompt.txt
 .local-db.json
 node_modules/
 .DS_Store

@@ -8,7 +8,8 @@
     "start": "node server.js",
     "dev": "node server.js",
     "check": "node --check server.js",
-    "generate:eval-bank": "node scripts/generate-evaluation-bank.js"
+    "generate:eval-bank": "node scripts/generate-evaluation-bank.js",
+    "smoke:quality": "node scripts/run-quality-smoke.js"
   },
   "dependencies": {
     "pg": "^8.16.0"

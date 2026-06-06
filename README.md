@@ -10,7 +10,7 @@ Recommended production routing:
 Gemini -> Codex
 ```
 
-Mock is the last-resort fallback after Gemini and Codex fail or time out. Production should prefer real providers, but can use mock to avoid a dead chat surface.
+Mock is disabled for production quality. If Gemini and Codex both fail or time out, the API returns an unavailable error instead of pretending to answer.
 
 ## Local Development
 
@@ -89,9 +89,10 @@ Set environment variables in the hosting platform. Do not upload `.env.local`.
 
 ```text
 NODE_ENV=production
-PROVIDER_ORDER=gemini,codex,mock
+PROVIDER_ORDER=gemini,codex
 ENABLE_CODEX_PROVIDER=1
-ENABLE_MOCK_FALLBACK=1
+ENABLE_MOCK_FALLBACK=0
+ENABLE_EXPERIMENTAL_PROVIDERS=0
 ALLOWED_ORIGINS=https://your-domain.example
 EXPOSE_DEBUG=0
 ENABLE_PROVIDER_STATUS=0
@@ -100,6 +101,7 @@ ADMIN_EMAILS=you@example.com
 
 GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODELS=gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-flash-lite-latest
 
 CODEX_BACKEND=api
 CODEX_API_KEY=...
@@ -127,7 +129,8 @@ BODY_LIMIT_BYTES=65536
 - Set `NODE_ENV=production` on the host.
 - Set `ALLOWED_ORIGINS` to your real domain.
 - Keep `EXPOSE_DEBUG=0` and `ENABLE_PROVIDER_STATUS=0` in production.
-- Use `Gemini -> Codex -> Mock` in production. Gemini gets a short fast-path timeout; Codex can wait up to one minute; mock is delayed by `MOCK_FALLBACK_DELAY_MS` and is last resort only.
+- Use `Gemini -> Codex` in production. Gemini gets a short fast-path timeout; Codex can wait up to one minute. Keep mock disabled for quality testing and real users.
+- Keep `ENABLE_EXPERIMENTAL_PROVIDERS=0` unless you intentionally test old third-party providers. This prevents stale OpenRouter/NVIDIA keys from entering the route.
 - Use `CODEX_BACKEND=api` or a warm `CODEX_WORKER_URL` for fast production fallback. `CODEX_BACKEND=cli` is useful locally, but every request starts a Codex process and is much slower.
 - Set spend caps and rate limits in provider dashboards.
 - Review `privacy.html`, `terms.html`, and `safety.html` before inviting users.

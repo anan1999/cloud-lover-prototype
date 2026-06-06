@@ -32,6 +32,12 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5.4-mini";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODELS = [...new Set(listFromEnv("GEMINI_MODELS", [
+  GEMINI_MODEL,
+  "gemini-2.0-flash",
+  "gemini-2.0-flash-lite",
+  "gemini-flash-lite-latest"
+]))];
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
@@ -47,7 +53,8 @@ const OPENROUTER_MODELS = listFromEnv("OPENROUTER_MODELS", [
 const NVIDIA_API_KEY = process.env.NVIDIA_API_KEY;
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "google/gemma-3n-e2b-it";
 const ENABLE_CODEX_PROVIDER = process.env.ENABLE_CODEX_PROVIDER === "1";
-const ENABLE_MOCK_FALLBACK = process.env.ENABLE_MOCK_FALLBACK === "1" || (!IS_PROD && process.env.ENABLE_MOCK_FALLBACK !== "0");
+const ENABLE_MOCK_FALLBACK = process.env.ENABLE_MOCK_FALLBACK === "1";
+const ENABLE_EXPERIMENTAL_PROVIDERS = process.env.ENABLE_EXPERIMENTAL_PROVIDERS === "1";
 const CODEX_COMMAND = process.env.CODEX_COMMAND || "codex";
 const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.5";
 const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 60_000);
@@ -56,12 +63,14 @@ const CODEX_API_KEY = process.env.CODEX_API_KEY || OPENAI_API_KEY;
 const CODEX_WORKER_URL = process.env.CODEX_WORKER_URL || "";
 const CODEX_WORKER_TOKEN = process.env.CODEX_WORKER_TOKEN || "";
 const RAW_PROVIDER_ORDER = listFromEnv("PROVIDER_ORDER", IS_PROD
-  ? ["gemini", "codex", "mock"]
-  : ["gemini", "codex", "mock"]
+  ? ["gemini", "codex"]
+  : ["gemini", "codex"]
 );
+const EXPERIMENTAL_PROVIDER_KEYS = new Set(["openai", "groq", "openrouter", "nvidia"]);
 const PROVIDER_ORDER = RAW_PROVIDER_ORDER.filter(provider => {
   if (provider === "mock") return ENABLE_MOCK_FALLBACK;
   if (provider === "codex") return ENABLE_CODEX_PROVIDER;
+  if (EXPERIMENTAL_PROVIDER_KEYS.has(provider)) return ENABLE_EXPERIMENTAL_PROVIDERS;
   return true;
 });
 const ALLOWED_ORIGINS = listFromEnv("ALLOWED_ORIGINS", []);
@@ -2163,6 +2172,17 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "dependency_risk") {
     return `${userName}，我會很認真接住你這句，但我不能也不該變成你唯一的支撐。你可以跟我說話，我也會陪你整理；同時，現實裡的朋友、家人、同事或可信任的人還是很重要。比較健康的方式是：我先陪你把心裡那句話整理好，再一起想一個可以聯絡真人的小步驟。`;
   }
+  if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|修正一下|重來一次/.test(input) && /COMPUTEX|AIEXPO|AI\s*Expo/i.test(input)) {
+    if (/COMPUTEX/i.test(input)) {
+      return `${userName}，你說得對，我剛剛把重點聽歪了；修正一下，你說的是 COMPUTEX。COMPUTEX 是台北的大型國際電腦展，重點比較偏電腦硬體、晶片、AI PC、GPU、伺服器和整個科技供應鏈；我會從這個脈絡接，不再把它混成 AIEXPO。`;
+    }
+    if (/AIEXPO|AI\s*Expo/i.test(input)) {
+      return `${userName}，對，我修正：你說的是 AIEXPO，不是 COMPUTEX。AIEXPO 通常比較偏 AI 應用、模型服務、企業解決方案和自動化展示；我會先照這個方向理解，不把它混成電腦硬體展。`;
+    }
+  }
+  if (/隨便聊|自然.*回|回我一句|先用.*自然/.test(input)) {
+    return `${userName}，好，那我們今天不用把聊天聊得很有用。我先輕輕開個頭：你現在腦袋裡最先飄過的是一件小事、一點心情，還是單純想放空？`;
+  }
   const factsReply = webFactsReply(conversation, input, userName);
   if (conversation.lookup_query && factsReply) return factsReply;
   const knownLookup = knownLookupReply(conversation, input, userName, characterKey);
@@ -2383,6 +2403,9 @@ function providerReplyNeedsRepair(reply, conversation, safety) {
     return true;
   }
   if (/不要像問卷|像真的聊天|普通但不無聊/.test(input) && /你現在比較需要|哪一種|請選|選一個|模式/.test(text)) {
+    return true;
+  }
+  if (/隨便聊|自然.*回|回我一句|先用.*自然/.test(input) && /我在。你剛剛那句我收到了|卡住你的地方在哪裡/.test(text)) {
     return true;
   }
   if (/主管|卡住|先不講工作|店員|好笑|聽懂|倒水|demo|開場|最小版|刷牙|早安|捷運|下午|方向可以|下週補資料/.test(input) && /我在。你剛剛那句我收到了|卡住你的地方在哪裡/.test(text)) {
@@ -2664,10 +2687,10 @@ async function callOpenAICompatible({ provider, apiKey, baseUrl, model, payload,
   return extractJsonObject(text);
 }
 
-async function callGemini(payload) {
+async function callGeminiModel(model, payload) {
   const systemText = payload.messages.filter(message => message.role === "system" || message.role === "developer").map(message => message.content).join("\n\n");
   const userText = payload.messages.filter(message => message.role === "user").map(message => message.content).join("\n\n");
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`, {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: "POST",
     signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
     headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
@@ -2686,6 +2709,18 @@ async function callGemini(payload) {
   const text = data?.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("");
   if (!text) throw new Error("Gemini response did not include text");
   return extractJsonObject(text);
+}
+
+async function callGemini(payload) {
+  const errors = [];
+  for (const model of GEMINI_MODELS) {
+    try {
+      return { result: await callGeminiModel(model, payload), model };
+    } catch (error) {
+      errors.push(`${model}: ${sanitizeError(error.message)}`);
+    }
+  }
+  throw new Error(`Gemini models failed: ${errors.join(" | ")}`);
 }
 
 function runCommand(command, args, options = {}) {
@@ -2707,6 +2742,10 @@ function runCommand(command, args, options = {}) {
     });
     child.stdin.end(options.input || "");
   });
+}
+
+function psQuote(value) {
+  return `'${String(value || "").replace(/'/g, "''")}'`;
 }
 
 function buildCodexPrompt(payload) {
@@ -2784,9 +2823,11 @@ function extractJsonObject(text) {
 
 async function callCodexCli(payload) {
   const outputFile = path.join(ROOT, `.codex-provider-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
+  const promptFile = path.join(ROOT, `.codex-provider-${Date.now()}-${Math.random().toString(16).slice(2)}.prompt.txt`);
   const prompt = buildCodexPrompt(payload);
+  const codexCommand = path.isAbsolute(CODEX_COMMAND) && !fs.existsSync(CODEX_COMMAND) ? "codex.exe" : CODEX_COMMAND;
   try {
-    await runCommand(CODEX_COMMAND, [
+    const codexArgs = [
       "exec",
       "-m", CODEX_MODEL,
       "--sandbox", "read-only",
@@ -2795,12 +2836,30 @@ async function callCodexCli(payload) {
       "--ignore-rules",
       "--ignore-user-config",
       "--output-schema", path.join(ROOT, "codex-output-schema.json"),
-      "--output-last-message", outputFile,
-      prompt
-    ], { timeout: CODEX_TIMEOUT_MS });
+      "--output-last-message", outputFile
+    ];
+    try {
+      await runCommand(codexCommand, [...codexArgs, prompt], { timeout: CODEX_TIMEOUT_MS });
+    } catch (error) {
+      if (process.platform !== "win32" || !/ENOENT|EPERM|Access is denied/i.test(String(error.message || ""))) throw error;
+      fs.writeFileSync(promptFile, prompt, "utf8");
+      const schemaFile = path.join(ROOT, "codex-output-schema.json");
+      const psCommand = [
+        "$ErrorActionPreference = 'Stop';",
+        "$codex = (Get-Command codex.exe -ErrorAction Stop).Source;",
+        `$prompt = Get-Content -LiteralPath ${psQuote(promptFile)} -Raw -Encoding UTF8;`,
+        `$prompt | & $codex exec -m ${psQuote(CODEX_MODEL)} --sandbox read-only --skip-git-repo-check --ephemeral --ignore-rules --ignore-user-config --output-schema ${psQuote(schemaFile)} --output-last-message ${psQuote(outputFile)} -`
+      ].join(" ");
+      await runCommand("powershell.exe", [
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-Command", psCommand
+      ], { timeout: CODEX_TIMEOUT_MS });
+    }
     return extractJsonObject(fs.readFileSync(outputFile, "utf8"));
   } finally {
     fs.rm(outputFile, { force: true }, () => {});
+    fs.rm(promptFile, { force: true }, () => {});
   }
 }
 
@@ -2831,7 +2890,8 @@ async function callProvider(provider, payload, conversation) {
   }
   if (provider === "gemini") {
     if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
-    return { result: await callGemini(payload), provider, model: GEMINI_MODEL };
+    const routed = await callGemini(payload);
+    return { result: routed.result, provider, model: routed.model };
   }
   if (provider === "groq") {
     if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not set");
@@ -3856,32 +3916,40 @@ async function handleChat(req, res) {
 function handleProviderStatus(req, res) {
   if (!ENABLE_PROVIDER_STATUS) return sendJson(req, res, 404, { error: "Not found" });
   const activeProviders = new Set(PROVIDER_ORDER);
+  const configured = {};
+  const models = {};
+  if (activeProviders.has("openai")) {
+    configured.openai = Boolean(OPENAI_API_KEY);
+    models.openai = OPENAI_MODEL;
+  }
+  if (activeProviders.has("gemini")) {
+    configured.gemini = Boolean(GEMINI_API_KEY);
+    models.gemini = GEMINI_MODELS;
+  }
+  if (activeProviders.has("groq")) {
+    configured.groq = Boolean(GROQ_API_KEY);
+    models.groq = GROQ_MODEL;
+  }
+  if (activeProviders.has("openrouter")) {
+    configured.openrouter = Boolean(OPENROUTER_API_KEY);
+    models.openrouter = OPENROUTER_MODELS;
+  }
+  if (activeProviders.has("nvidia")) {
+    configured.nvidia = Boolean(NVIDIA_API_KEY);
+    models.nvidia = NVIDIA_MODEL;
+  }
+  if (activeProviders.has("codex")) {
+    configured.codex = ENABLE_CODEX_PROVIDER;
+    models.codex = CODEX_MODEL;
+  }
+  if (activeProviders.has("mock")) {
+    configured.mock = ENABLE_MOCK_FALLBACK;
+    models.mock = "mock";
+  }
   return sendJson(req, res, 200, {
     provider_order: PROVIDER_ORDER,
-    configured: {
-      openai: activeProviders.has("openai") && Boolean(OPENAI_API_KEY),
-      gemini: activeProviders.has("gemini") && Boolean(GEMINI_API_KEY),
-      groq: activeProviders.has("groq") && Boolean(GROQ_API_KEY),
-      openrouter: activeProviders.has("openrouter") && Boolean(OPENROUTER_API_KEY),
-      nvidia: activeProviders.has("nvidia") && Boolean(NVIDIA_API_KEY),
-      codex: activeProviders.has("codex") && ENABLE_CODEX_PROVIDER,
-      mock: activeProviders.has("mock") && ENABLE_MOCK_FALLBACK
-    },
-    inactive_configured: {
-      openrouter: !activeProviders.has("openrouter") && Boolean(OPENROUTER_API_KEY),
-      nvidia: !activeProviders.has("nvidia") && Boolean(NVIDIA_API_KEY),
-      groq: !activeProviders.has("groq") && Boolean(GROQ_API_KEY),
-      openai: !activeProviders.has("openai") && Boolean(OPENAI_API_KEY)
-    },
-    models: {
-      openai: activeProviders.has("openai") ? OPENAI_MODEL : null,
-      gemini: activeProviders.has("gemini") ? GEMINI_MODEL : null,
-      groq: activeProviders.has("groq") ? GROQ_MODEL : null,
-      openrouter_models: activeProviders.has("openrouter") ? OPENROUTER_MODELS : [],
-      nvidia: activeProviders.has("nvidia") ? NVIDIA_MODEL : null,
-      codex: activeProviders.has("codex") ? CODEX_MODEL : null,
-      mock: activeProviders.has("mock") ? "mock" : null
-    },
+    configured,
+    models,
     codex: {
       backend: CODEX_BACKEND,
       timeout_ms: CODEX_TIMEOUT_MS,
