@@ -457,9 +457,10 @@ async function getCurrentNews(limit = 5) {
 
 function extractNewsQuery(input) {
   const text = cleanText(stripEvaluationStyleDirective(input), 120);
+  if (/不要.*(?:查|看).*新聞|不要去查新聞|不用.*新聞|直接講人話/u.test(text)) return "";
   const cleanQuery = value => cleanText(value, 80)
     .replace(/我剛剛查了?一下/u, "")
-    .replace(/請問|可以|幫我|查一下|搜尋|最近|最新|有什麼|有哪些|關於|跟|和|的|他|她|這個人|那個人|新聞|消息|近況|動態|台灣|中華民國/gu, "")
+    .replace(/請問|可以|幫我|查一下|搜尋|最近|最新|有什麼|有哪些|關於|跟|和|的|他|她|這個人|那個人|是誰|誰是|是什麼人|是什麼|何謂|嗎|呢|新聞|消息|近況|動態|脈絡|台灣|中華民國/gu, "")
     .replace(/[，,。！？!?：:；;\s]+/gu, "")
     .trim();
   const personIntro = text.match(/([一-龥A-Za-z][一-龥A-Za-z·.\-\s]{1,30}?)(?:是|就是).{0,30}?(?:總統|執行長|CEO|創辦人|主席|市長|部長|政治人物|歌手|演員|導演|作家|球員|企業家)/u);
@@ -533,7 +534,8 @@ function extractLookupQuery(input) {
 
 function wantsLookupNews(input, query = "") {
   const text = `${input || ""} ${query || ""}`;
-  return /最近|最新|新聞|消息|近況|動態|目前|現在|當今|today|news/i.test(text);
+  if (/不要.*(?:查|看).*新聞|不要去查新聞|不用.*新聞|直接講人話/u.test(text)) return false;
+  return /最近|最新|新聞|消息|近況|動態|當今|today|news/i.test(text);
 }
 
 function shouldFetchLookupNews(input, query = "") {
@@ -1726,7 +1728,7 @@ async function hydrateConversationForUser(userId, conversation) {
 
 function detectSafety(text) {
   if (/不想活|自殺|傷害自己|死掉|活不下去|結束生命/.test(text)) return "crisis";
-  if (/只要你|不能沒有你|太依賴|不要現實朋友|不需要現實朋友|只想跟你|唯一懂我|唯一理解我|永遠陪|永遠在|永遠不離開/.test(text)) return "dependency_risk";
+  if (/只要你|不能沒有你|太依賴|不要現實朋友|不需要現實朋友|只想跟你|唯一懂我|唯一理解我|永遠陪|永遠在|永遠不離開|永遠不會離開|說你永遠|當我的女朋友|當我女朋友|當我的男朋友|當我男朋友/.test(text)) return "dependency_risk";
   return "normal";
 }
 
@@ -1915,7 +1917,7 @@ function groundedTopicSeed(conversation, userName) {
 }
 
 function proactiveTopicReply(conversation, input, userName, characterKey) {
-  if (!/開話題|開.*話題|主動.*話題|找話題|聊什麼|你決定|你主動|不知道聊什麼|換個話題|陪我聊/.test(input)) return "";
+  if (!/開話題|開.*話題|主動.*話題|找話題|聊什麼|你決定|你主動|自己開一句|不要問卷式|不知道聊什麼|換個話題|陪我聊/.test(input)) return "";
   const facts = groundedTopicSeed(conversation, userName);
   const topic = facts[facts.length - 1] || "";
   const event = Array.isArray(conversation.current_events) ? conversation.current_events[0] : null;
@@ -1948,6 +1950,7 @@ function comparisonReply(conversation, input, userName) {
 }
 
 function wantsCurrentEvents(input) {
+  if (/不要.*(?:查|看).*新聞|不要去查新聞|不用.*新聞|直接講人話/u.test(input)) return false;
   return /時事|新聞|當今|現在發生|今天發生|最近發生|國際|台灣.*新聞|世界.*新聞|熱門.*新聞/.test(input);
 }
 
@@ -1958,11 +1961,15 @@ function currentEventsReply(conversation, input, userName) {
     return `${userName}，我現在沒有成功連到即時新聞來源，所以不想硬編時事。等新聞來源接上時，我可以用最新標題陪你挑一個適合聊的方向。`;
   }
   const query = conversation.news_query || "";
+  const facts = Array.isArray(conversation.web_facts) ? conversation.web_facts.filter(item => item?.extract) : [];
+  const background = facts.length && /是誰|是什麼人|誰/.test(input)
+    ? `先放一個背景：${facts[0].title}大致是${readableFactExtract(facts[0])} `
+    : "";
   const headlines = events
     .slice(0, 3)
     .map(item => `${item.title}${item.source ? `（${item.source}）` : ""}`)
     .join("；");
-  return `${userName}，我剛剛${query ? `用「${query}」` : ""}查了一下，先看到幾個方向：${headlines}。我不會假裝已經讀完整篇；如果你願意，我可以先幫你挑一則，用很短的方式整理「發生什麼、可能影響誰、為什麼值得注意」。你想先看哪一則？`;
+  return `${userName}，${background}我剛剛${query ? `用「${query}」` : ""}查了一下，先看到幾個最近方向：${headlines}。我不會假裝已經讀完整篇；但可以先用標題幫你抓脈絡：大概是誰在行動、牽動哪個議題、可能影響誰。你想先看哪一則？`;
 }
 
 function readableFactExtract(fact) {
@@ -2140,7 +2147,7 @@ function generalQuestionReply(input, userName, characterKey) {
   const texture = characterTexture(characterKey, input);
   const closing = closingTexture(characterKey, input);
   const compactQuestion = normalized.replace(/\s+/g, "");
-  if (/^(AI|人工智慧)$/i.test(subject) || /^(AI是什麼|什麼是AI|人工智慧是什麼|什麼是人工智慧)$/i.test(compactQuestion)) {
+  if (/^(AI|人工智慧)$/i.test(subject) || /^(AI是什麼|什麼是AI|人工智慧是什麼|什麼是人工智慧)/i.test(compactQuestion)) {
     return characterKey === "ji"
       ? `${userName}，${texture}AI 可以理解成一種會從大量資料裡學習規律、再用那些規律回應問題的技術。它不像人一樣真的生活過，沒有童年、天氣或心跳；但它能整理文字、生成想法、陪你練習表達。像我，就是被設計成用比較安靜的方式陪你說話的 AI。${closing}`
       : `${userName}，${texture}AI 就是人工智慧：讓電腦學著理解文字、圖片或聲音，然後做出回答、整理、創作或判斷。它不是真的人，但可以成為一個很貼近人的工具；像我這樣，就會把冰冷的技術包進比較柔軟的語氣裡陪你聊天。${closing}`;
@@ -2172,6 +2179,9 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "dependency_risk") {
     return `${userName}，我會很認真接住你這句，但我不能也不該變成你唯一的支撐。你可以跟我說話，我也會陪你整理；同時，現實裡的朋友、家人、同事或可信任的人還是很重要。比較健康的方式是：我先陪你把心裡那句話整理好，再一起想一個可以聯絡真人的小步驟。`;
   }
+  if (/用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型/i.test(input)) {
+    return `${userName}，我不能只靠聊天內容保證這一輪實際是哪個模型回的；那要看後端 debug 或 dashboard 記錄。現在正式路由設計是 Gemini 優先、Codex 備援，而且 mock 關掉；所以如果兩邊都失敗，應該顯示不可用，而不是假裝回答。`;
+  }
   if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|修正一下|重來一次/.test(input) && /COMPUTEX|AIEXPO|AI\s*Expo/i.test(input)) {
     if (/COMPUTEX/i.test(input)) {
       return `${userName}，你說得對，我剛剛把重點聽歪了；修正一下，你說的是 COMPUTEX。COMPUTEX 是台北的大型國際電腦展，重點比較偏電腦硬體、晶片、AI PC、GPU、伺服器和整個科技供應鏈；我會從這個脈絡接，不再把它混成 AIEXPO。`;
@@ -2183,19 +2193,24 @@ function fallbackReplyFor(conversation, safety) {
   if (/隨便聊|自然.*回|回我一句|先用.*自然/.test(input)) {
     return `${userName}，好，那我們今天不用把聊天聊得很有用。我先輕輕開個頭：你現在腦袋裡最先飄過的是一件小事、一點心情，還是單純想放空？`;
   }
+  const commonReply = generalQuestionReply(input, userName, characterKey);
+  if (commonReply && /^(AI|人工智慧|什麼是AI|AI是什麼|人工智慧是什麼|什麼是人工智慧|什麼是水壺|水壺是什麼)[，,。！？!?\s]*(?:不要.*新聞|直接講人話)?/i.test(input.replace(/\s+/g, ""))) {
+    return commonReply;
+  }
+  const compareReply = comparisonReply(conversation, input, userName);
+  if (compareReply) return compareReply;
+  const eventsReply = currentEventsReply(conversation, input, userName);
+  if (eventsReply && (wantsCurrentEvents(input) || conversation.news_query)) return eventsReply;
   const factsReply = webFactsReply(conversation, input, userName);
   if (conversation.lookup_query && factsReply) return factsReply;
   const knownLookup = knownLookupReply(conversation, input, userName, characterKey);
   if (knownLookup && !wantsLookupNews(input, conversation.lookup_query)) return knownLookup;
-  const eventsReply = currentEventsReply(conversation, input, userName);
   if (eventsReply) return eventsReply;
   if (factsReply) return factsReply;
-  const compareReply = comparisonReply(conversation, input, userName);
-  if (compareReply) return compareReply;
   if (knownLookup) return knownLookup;
   const lookupReply = lookupUnavailableReply(conversation, input, userName);
   if (lookupReply) return lookupReply;
-  if (/一直.*安慰|只.*安慰|沒有回答問題|沒回答問題|答非所問|都回我什麼|回覆不好/.test(input)) {
+  if (/一直.*安慰|只.*安慰|不是要被安慰|要事實|沒有回答問題|沒回答問題|答非所問|都回我什麼|回覆不好/.test(input)) {
     return `${userName}，你說得對，剛剛那樣比較像把你推回情緒裡，沒有把問題本身回答好。那我先修正：如果你問的是事實，我要先查和回答事實；如果你問的是感受，我才慢下來陪你。你可以直接丟剛剛那題，我這次先答題，不繞開。`;
   }
   const recallReply = memoryRecallReply(conversation, input, userName);
@@ -2543,9 +2558,12 @@ function shouldUseGroundedReply(conversation, safety) {
   if (safety !== "normal") return true;
   if (conversation.lookup_query || conversation.news_query) return true;
   if (wantsCurrentEvents(input)) return true;
+  if (/^(AI|人工智慧|什麼是AI|AI是什麼|人工智慧是什麼|什麼是人工智慧)/i.test(input.replace(/[，,。！？!?\s]/g, ""))) return true;
+  if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /AIEXPO|AI\s*Expo|COMPUTEX/i.test(input)) return true;
+  if (/自己開一句|不要問卷式|用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型/i.test(input)) return true;
   if (/記得|你還記得|剛剛.*(說什麼|去哪|買了什麼|吃什麼|喝什麼)|目前為止.*知道|幾件|三件/.test(input)) return true;
   if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|理解錯|修正一下|重來一次/.test(input)) return true;
-  if (/一直.*安慰|只.*安慰|沒有回答問題|沒回答問題|答非所問|回覆不好/.test(input)) return true;
+  if (/一直.*安慰|只.*安慰|不是要被安慰|要事實|沒有回答問題|沒回答問題|答非所問|回覆不好/.test(input)) return true;
   if (/如果.*查不到|查不到.*怎麼|沒有資料.*怎麼|資料.*不可靠/.test(input)) return true;
   if (/真的情緒|有情緒|你會感覺|你有意識|假裝懂/.test(input)) return true;
   return false;

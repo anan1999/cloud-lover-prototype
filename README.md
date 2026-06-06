@@ -58,6 +58,17 @@ Render will ask for provider API keys because `render.yaml` marks them as `sync:
 See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full Render launch checklist.
 For the shortest launch path, use [ONE_SHOT_LAUNCH.md](./ONE_SHOT_LAUNCH.md).
 
+## Quality Tests
+
+Run these against a local server before pushing conversation or provider changes:
+
+```powershell
+$env:REGRESSION_URL="http://127.0.0.1:8787"
+npm run regression:quality
+```
+
+`smoke:quality` checks the shortest no-mock path. `regression:quality` covers the issues that previously appeared: fact questions turning into comfort templates, wrong event recall, AIEXPO/COMPUTEX confusion, unsafe dependency replies, mock fallback, and stale third-party providers.
+
 ## Product Architecture
 
 - Frontend: `index.html` chat UI, account UI, companion settings, conversation mode selector, memory panel, and developer diagnostics.
