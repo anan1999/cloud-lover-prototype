@@ -60,6 +60,9 @@ const CODEX_COMMAND = process.env.CODEX_COMMAND || findLocalCodexCommand() || "c
 const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.5";
 const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 60_000);
 const CODEX_BACKEND = process.env.CODEX_BACKEND || "api";
+const GEMINI_NATURALIZE_TIMEOUT_MS = Number(process.env.GEMINI_NATURALIZE_TIMEOUT_MS || GROUNDED_NATURALIZE_TIMEOUT_MS);
+const CODEX_NATURALIZE_TIMEOUT_MS = Number(process.env.CODEX_NATURALIZE_TIMEOUT_MS || CODEX_TIMEOUT_MS);
+const CODEX_CLI_PROMPT_MODE = process.env.CODEX_CLI_PROMPT_MODE || "stdin";
 const CODEX_API_KEY = process.env.CODEX_API_KEY || OPENAI_API_KEY;
 const CODEX_WORKER_URL = process.env.CODEX_WORKER_URL || "";
 const CODEX_WORKER_TOKEN = process.env.CODEX_WORKER_TOKEN || "";
@@ -3798,7 +3801,7 @@ function buildGroundedNaturalizationPayload(conversation, groundedResult) {
     ]
   };
   return {
-    timeout_ms: GROUNDED_NATURALIZE_TIMEOUT_MS,
+    timeout_ms: GEMINI_NATURALIZE_TIMEOUT_MS,
     temperature: 0.88,
     messages: [
       {
@@ -3816,11 +3819,18 @@ function buildGroundedNaturalizationPayload(conversation, groundedResult) {
   };
 }
 
+function naturalizationTimeoutForProvider(provider) {
+  if (provider === "codex") return CODEX_NATURALIZE_TIMEOUT_MS;
+  if (provider === "gemini") return GEMINI_NATURALIZE_TIMEOUT_MS;
+  return GROUNDED_NATURALIZE_TIMEOUT_MS;
+}
+
 async function naturalizeGroundedResult(groundedResult, conversation, attempts) {
   if (!shouldNaturalizeGrounded(conversation, groundedResult)) return null;
-  const payload = buildGroundedNaturalizationPayload(conversation, groundedResult);
+  const basePayload = buildGroundedNaturalizationPayload(conversation, groundedResult);
   const realProviderOrder = (conversation.provider_order_override || PROVIDER_ORDER).filter(provider => provider !== "mock");
   for (const provider of realProviderOrder) {
+    const payload = { ...basePayload, timeout_ms: naturalizationTimeoutForProvider(provider) };
     const naturalizeKey = `${provider}:naturalize`;
     const health = getProviderHealth(naturalizeKey);
     if (health.cooldown_until > now()) {
@@ -4110,9 +4120,22 @@ function buildCodexPrompt(payload) {
     JSON.stringify({
       user_input: conversation.user_input,
       lover_profile: conversation.lover_profile,
+      input_channel: conversation.input_channel,
+      output_channel: conversation.output_channel,
       long_term_memory: conversation.long_term_memory,
+      memory_context: conversation.memory_context,
+      samantha_brain: conversation.samantha_brain,
+      conversation_summary: conversation.conversation_summary,
+      emotional_continuity_summary: conversation.emotional_continuity_summary,
+      response_plan: conversation.response_plan,
+      emotion_state: conversation.emotion_state,
+      situation_state: conversation.situation_state,
       intimacy: conversation.intimacy,
       recent_conversation: conversation.recent_conversation,
+      lookup_query: conversation.lookup_query,
+      news_query: conversation.news_query,
+      web_facts: Array.isArray(conversation.web_facts) ? conversation.web_facts.slice(0, 5) : conversation.web_facts,
+      current_events: Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 5) : conversation.current_events,
       grounded_draft: conversation.grounded_draft,
       naturalization_task: conversation.naturalization_task,
       reply_constraints: conversation.reply_constraints,
@@ -4190,25 +4213,32 @@ async function callCodexCli(payload) {
       "--output-schema", path.join(ROOT, "codex-output-schema.json"),
       "--output-last-message", outputFile
     ];
-    try {
-      await runCommand(codexCommand, [...codexArgs, prompt], { timeout: timeoutMs });
-    } catch (error) {
-      if (process.platform !== "win32" || !/ENOENT|EPERM|Access is denied/i.test(String(error.message || ""))) throw error;
-      fs.writeFileSync(promptFile, prompt, "utf8");
-      const schemaFile = path.join(ROOT, "codex-output-schema.json");
-      const psCommand = [
-        "$ErrorActionPreference = 'Stop';",
-        `$codex = ${psQuote(codexCommand)};`,
-        `$prompt = Get-Content -LiteralPath ${psQuote(promptFile)} -Raw -Encoding UTF8;`,
-        `$prompt | & $codex exec -m ${psQuote(CODEX_MODEL)} --sandbox read-only --skip-git-repo-check --ephemeral --ignore-rules --ignore-user-config --output-schema ${psQuote(schemaFile)} --output-last-message ${psQuote(outputFile)} -`
-      ].join(" ");
-      await runCommand("powershell.exe", [
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-Command", psCommand
-      ], { timeout: timeoutMs });
+    fs.writeFileSync(promptFile, prompt, "utf8");
+    let stdout = "";
+    if (String(CODEX_CLI_PROMPT_MODE).toLowerCase() === "argv") {
+      stdout = await runCommand(codexCommand, [...codexArgs, prompt], { timeout: timeoutMs });
+    } else {
+      try {
+        stdout = await runCommand(codexCommand, [...codexArgs, "-"], { timeout: timeoutMs, input: prompt });
+      } catch (error) {
+        if (process.platform !== "win32" || !/ENOENT|EPERM|Access is denied/i.test(String(error.message || ""))) throw error;
+        const schemaFile = path.join(ROOT, "codex-output-schema.json");
+        const psCommand = [
+          "$ErrorActionPreference = 'Stop';",
+          `$codex = ${psQuote(codexCommand)};`,
+          `$prompt = Get-Content -LiteralPath ${psQuote(promptFile)} -Raw -Encoding UTF8;`,
+          `$prompt | & $codex exec -m ${psQuote(CODEX_MODEL)} --sandbox read-only --skip-git-repo-check --ephemeral --ignore-rules --ignore-user-config --output-schema ${psQuote(schemaFile)} --output-last-message ${psQuote(outputFile)} -`
+        ].join(" ");
+        stdout = await runCommand("powershell.exe", [
+          "-NoProfile",
+          "-ExecutionPolicy", "Bypass",
+          "-Command", psCommand
+        ], { timeout: timeoutMs });
+      }
     }
-    return { result: extractJsonObject(fs.readFileSync(outputFile, "utf8")), usage: null };
+    const fileText = fs.existsSync(outputFile) ? fs.readFileSync(outputFile, "utf8") : "";
+    const outputText = String(fileText || "").trim() ? fileText : stdout;
+    return { result: extractJsonObject(outputText), usage: null };
   } finally {
     fs.rm(outputFile, { force: true }, () => {});
     fs.rm(promptFile, { force: true }, () => {});
@@ -5528,11 +5558,13 @@ function handleProviderStatus(req, res) {
     codex: {
       backend: CODEX_BACKEND,
       timeout_ms: CODEX_TIMEOUT_MS,
+      naturalize_timeout_ms: CODEX_NATURALIZE_TIMEOUT_MS,
+      cli_prompt_mode: CODEX_CLI_PROMPT_MODE,
       api_configured: Boolean(CODEX_API_KEY),
       worker_configured: Boolean(CODEX_WORKER_URL),
       cli_command: CODEX_COMMAND
     },
-    gemini: { timeout_ms: GEMINI_TIMEOUT_MS },
+    gemini: { timeout_ms: GEMINI_TIMEOUT_MS, naturalize_timeout_ms: GEMINI_NATURALIZE_TIMEOUT_MS },
     task_model_routing: TASK_MODEL_ROUTING,
     health: providerHealthSnapshot(),
     cache: { entries: responseCache.size, ttl_ms: CACHE_TTL_MS },

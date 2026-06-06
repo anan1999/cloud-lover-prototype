@@ -36,8 +36,16 @@ services:
         value: "60000"
       - key: GEMINI_TIMEOUT_MS
         value: "12000"
+      - key: GROUNDED_NATURALIZE_TIMEOUT_MS
+        value: "1500"
+      - key: GEMINI_NATURALIZE_TIMEOUT_MS
+        value: "1500"
       - key: CODEX_TIMEOUT_MS
         value: "60000"
+      - key: CODEX_NATURALIZE_TIMEOUT_MS
+        value: "60000"
+      - key: CODEX_CLI_PROMPT_MODE
+        value: stdin
       - key: MOCK_FALLBACK_DELAY_MS
         value: "60000"
       - key: CODEX_MODEL

@@ -166,12 +166,15 @@ CODEX_API_KEY=...
 CODEX_MODEL=gpt-5.5
 CODEX_COMMAND=
 CODEX_TIMEOUT_MS=60000
+CODEX_NATURALIZE_TIMEOUT_MS=60000
+CODEX_CLI_PROMPT_MODE=stdin
 CODEX_WORKER_URL=
 CODEX_WORKER_TOKEN=
 
 PROVIDER_TIMEOUT_MS=60000
 GEMINI_TIMEOUT_MS=12000
 GROUNDED_NATURALIZE_TIMEOUT_MS=1500
+GEMINI_NATURALIZE_TIMEOUT_MS=1500
 MOCK_FALLBACK_DELAY_MS=60000
 CACHE_TTL_MS=120000
 PROVIDER_COOLDOWN_MS=60000
@@ -192,6 +195,8 @@ BODY_LIMIT_BYTES=65536
 - Use `Gemini -> Codex` in production. Gemini gets a short fast-path timeout; Codex can wait up to one minute. Keep mock disabled for quality testing and real users.
 - Keep `ENABLE_EXPERIMENTAL_PROVIDERS=0` unless you intentionally test old third-party providers. This prevents stale OpenRouter/NVIDIA keys from entering the route.
 - Use `CODEX_BACKEND=api` or a warm `CODEX_WORKER_URL` for fast production fallback. `CODEX_BACKEND=cli` is useful locally, but every request starts a Codex process and is much slower. On Windows, the server auto-detects the real Codex binary under `%LOCALAPPDATA%\OpenAI\Codex\bin`; set `CODEX_COMMAND` only if you need to override it.
+- Keep `CODEX_CLI_PROMPT_MODE=stdin` for CLI fallback. This sends the full Samantha prompt through stdin instead of command-line arguments, so long memory/context prompts are not truncated.
+- `GEMINI_NATURALIZE_TIMEOUT_MS` can stay short for quick quota/error detection; `CODEX_NATURALIZE_TIMEOUT_MS` should be longer when you prefer stable Codex fallback over immediate grounded wording.
 - Set spend caps and rate limits in provider dashboards.
 - Review `privacy.html`, `terms.html`, and `safety.html` before inviting users.
 
