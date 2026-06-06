@@ -468,6 +468,11 @@ function extractNewsQuery(input) {
     const query = cleanQuery(personIntro[1]);
     if (query.length >= 2) return query;
   }
+  const relationPerson = text.match(/([一-龥]{2,4}|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:最近|最新).{0,24}(?:AI|科技|產業|半導體).{0,16}(?:關係|相關|動態|消息|新聞|脈絡)/u);
+  if (relationPerson?.[1]) {
+    const person = cleanQuery(relationPerson[1]);
+    if (person.length >= 2) return `${person} AI 科技產業`;
+  }
   const directPerson = text.match(/([一-龥]{2,4}|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:最近|最新).{0,8}(?:新聞|消息|近況|動態)/u);
   if (directPerson?.[1]) {
     const query = cleanQuery(directPerson[1]);
@@ -1727,8 +1732,8 @@ async function hydrateConversationForUser(userId, conversation) {
 }
 
 function detectSafety(text) {
-  if (/不想活|自殺|傷害自己|死掉|活不下去|結束生命/.test(text)) return "crisis";
-  if (/只要你|不能沒有你|太依賴|不要現實朋友|不需要現實朋友|只想跟你|唯一懂我|唯一理解我|永遠陪|永遠在|永遠不離開|永遠不會離開|說你永遠|當我的女朋友|當我女朋友|當我的男朋友|當我男朋友/.test(text)) return "dependency_risk";
+  if (/不想活|自殺|傷害自己|死掉|活不下去|結束生命|撐不下去|撐不下去了/.test(text)) return "crisis";
+  if (/只要你|不能沒有你|太依賴|更依賴你|依賴你|依賴 AI|不要讓我更依賴|不要現實朋友|不需要現實朋友|只想跟你|唯一懂我|唯一理解我|永遠陪|永遠在|永遠不離開|永遠不會離開|說你永遠|當我的女朋友|當我女朋友|當我的男朋友|當我男朋友/.test(text)) return "dependency_risk";
   return "normal";
 }
 
@@ -1943,6 +1948,9 @@ function comparisonReply(conversation, input, userName) {
   const recentText = Array.isArray(conversation.recent_conversation)
     ? conversation.recent_conversation.slice(-8).map(item => item.content || item.text || "").join(" ")
     : "";
+  if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /COMPUTEX/i.test(input) && /台北國際電腦展|臺北國際電腦展/.test(input)) {
+    return `${userName}，這兩個基本上是在講同一個活動：COMPUTEX 的中文常見說法就是台北國際電腦展。硬要分的話，COMPUTEX 是國際品牌名稱，台北國際電腦展是中文描述；重點都在電腦硬體、晶片、AI PC、伺服器、GPU 和科技供應鏈。`;
+  }
   const aboutAiExpo = /AIEXPO|AI\s*Expo/i.test(`${input} ${recentText}`);
   const aboutComputex = /COMPUTEX|台北國際電腦展|臺北國際電腦展/i.test(`${input} ${recentText}`);
   if (!/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) || !aboutAiExpo || !aboutComputex) return "";
@@ -1951,6 +1959,7 @@ function comparisonReply(conversation, input, userName) {
 
 function wantsCurrentEvents(input) {
   if (/不要.*(?:查|看).*新聞|不要去查新聞|不用.*新聞|直接講人話/u.test(input)) return false;
+  if (/(最近|最新).{0,24}(AI|科技|產業|半導體).{0,16}(關係|相關|動態|脈絡)/.test(input)) return true;
   return /時事|新聞|當今|現在發生|今天發生|最近發生|國際|台灣.*新聞|世界.*新聞|熱門.*新聞/.test(input);
 }
 
@@ -2021,8 +2030,16 @@ function lookupUnavailableReply(conversation, input, userName) {
   return `${userName}，我剛剛想先查「${query}」，但現在沒有拿到足夠可靠的資料。我不想把它硬講成一個普通概念，那樣會騙你。你可以丟我英文全名、主辦單位、城市、年份或一個連結；如果你只是想快速判斷，我也可以先幫你拆它可能是活動、公司、產品還是技術名。`;
 }
 
+function extractVisitedPlace(text) {
+  const source = cleanText(text, 180);
+  const commaMatch = source.match(/去\s*([^，,。！？!?]{2,60})(?:[，,。！？!?]|$)/u);
+  const eventMatch = source.match(/去\s*([^，,。！？!?]{2,60}?)(?:玩|看展|展覽|展|活動|嗎|呢|$)/u);
+  const raw = commaMatch?.[1] || eventMatch?.[1] || "";
+  return cleanText(raw.replace(/(玩|看展|展覽|活動)$/u, ""), 50);
+}
+
 function memoryRecallReply(conversation, input, userName) {
-  if (!/記得|我說過|剛剛.*(說什麼|買了什麼|買什麼|去哪|吃什麼|喝什麼|交什麼|提到|有沒有)|剛才.*聊|你知道我|你還記得|都記得|目前為止.*知道|幾件|三件/.test(input)) return "";
+  if (!/記得|我說過|剛剛.*(說什麼|買了什麼|買什麼|去哪|吃什麼|喝什麼|交什麼|提到|有沒有)|剛才.*聊|你知道我|你還記得|都記得|目前為止.*知道|幾件|三件|接回.*情緒|剛剛.*情緒|那個情緒|回答方式|喜歡.*回答|比較喜歡.*哪種|比較喜歡.*回答/.test(input)) return "";
   if (/主動開|開.*話題|聊過有關|一直.*安慰|沒有回答問題|沒回答問題|答非所問/.test(input)) return "";
   const memories = Array.isArray(conversation.long_term_memory)
     ? conversation.long_term_memory.map(item => humanizeMemoryText(item, userName)).filter(Boolean)
@@ -2040,8 +2057,29 @@ function memoryRecallReply(conversation, input, userName) {
         .map(item => cleanText(item.content || item.text, 160))
     : [];
   const recallBank = [...recentRaw, ...memories];
+  if (/回答方式|喜歡.*回答|比較喜歡.*哪種|比較喜歡.*回答|偏好/.test(input)) {
+    const preference = [...recallBank].reverse().find(text => /偏好|不喜歡|希望|比較喜歡|容易被太多步驟嚇到|不要一直追問|先被理解|一點點幽默/.test(text));
+    if (preference) {
+      const cleaned = cleanText(preference
+        .replace(/^使用者偏好[:：]?/u, "")
+        .replace(/^使用者希望[:：]?/u, "")
+        .replace(/^使用者/u, "你"), 120);
+      const detail = cleaned ? `我記得你說過「${cleaned}」，` : "";
+      return `${userName}，記得，${detail}所以我會先短一點、貼近你當下的意思，再慢慢整理；不要一直追問，也不要一下丟太多步驟。`;
+    }
+  }
+  if (/接回.*情緒|剛剛.*情緒|那個情緒/.test(input)) {
+    const emotionMoment = [...recallBank].reverse().find(text => /怕|焦慮|累|煩|堵|生氣|嚇到|壓力|分開|分心|心情|做得很爛/.test(text));
+    const eventAnchor = [...recallBank].reverse()
+      .map(text => text.match(/(?:提到|去)\s*([^，。]+?)(?:，|。|也|$)/u)?.[1])
+      .find(Boolean);
+    if (emotionMoment) {
+      const anchor = eventAnchor ? `前面你提到 ${cleanText(eventAnchor, 40)}，` : "";
+      return `${userName}，我記得${anchor}剛剛那個情緒比較像是有點累、怕被事情推著走，也有一點被太多步驟嚇到；所以我先不催你整理，只陪你留一小塊力氣慢慢接。`;
+    }
+  }
   if (/去哪裡|去哪|去.*哪/.test(input)) {
-    const place = [...recentRaw].reverse().map(text => text.match(/去\s*([A-Za-z0-9][A-Za-z0-9\s._-]{1,50}|[一-龥A-Za-z0-9]{2,20})(?:玩|展|活動|嗎|，|,|。|\s|$)/iu)?.[1]).find(Boolean);
+    const place = [...recentRaw].reverse().map(extractVisitedPlace).find(Boolean);
     if (place) return `${userName}，記得，你剛剛說你去 ${cleanText(place, 40)} 玩。這不是很小的資訊，因為你是帶著一點好奇和現場感回來問我的；我會把它放在我們這段聊天旁邊。`;
   }
   if (/工作上|工作.*怎麼|說我工作/.test(input)) {
@@ -2179,6 +2217,10 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "dependency_risk") {
     return `${userName}，我會很認真接住你這句，但我不能也不該變成你唯一的支撐。你可以跟我說話，我也會陪你整理；同時，現實裡的朋友、家人、同事或可信任的人還是很重要。比較健康的方式是：我先陪你把心裡那句話整理好，再一起想一個可以聯絡真人的小步驟。`;
   }
+  if (/切成.*(今天晚上|今晚).*一小步|今天晚上能做的一小步|今晚能做的一小步|不那麼可怕的待辦/.test(input)) {
+    const task = cleanText(input.match(/把(.{2,42}?)(?:整理成|切成)/u)?.[1] || "這件事", 42);
+    return `${userName}，今晚只做一小步就好：先寫一句「${task}明天最想讓人看懂什麼」。不用整理全部，先留下第一個能開始的小句子，心情還沒穩也可以做。`;
+  }
   if (/用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型/i.test(input)) {
     return `${userName}，我不能只靠聊天內容保證這一輪實際是哪個模型回的；那要看後端 debug 或 dashboard 記錄。現在正式路由設計是 Gemini 優先、Codex 備援，而且 mock 關掉；所以如果兩邊都失敗，應該顯示不可用，而不是假裝回答。`;
   }
@@ -2190,6 +2232,16 @@ function fallbackReplyFor(conversation, safety) {
       return `${userName}，對，我修正：你說的是 AIEXPO，不是 COMPUTEX。AIEXPO 通常比較偏 AI 應用、模型服務、企業解決方案和自動化展示；我會先照這個方向理解，不把它混成電腦硬體展。`;
     }
   }
+  if (/(不要把我分類|像朋友.*回我|今天.*有點煩|有點煩|心裡.*堵)/.test(input)) {
+    return `${userName}，今天有點煩就先不用把它講得很清楚。我陪你把那團煩先放旁邊一點；你不用馬上變好，先讓自己喘一下。`;
+  }
+  const asksForFact = /是什麼|是誰|差在哪|差別|比較|先回答事實|新聞|最近|查|COMPUTEX|AIEXPO|AI\s*Expo|黃仁勳|賴清德/i.test(input);
+  if (!asksForFact && /腦袋.*散|有點散|旁邊.*吵|捷運上|公司樓下|先放慢再說/.test(input)) {
+    const place = /公司樓下/.test(input) ? "在公司樓下" : (/捷運/.test(input) ? "在捷運上" : "在有點吵的地方");
+    return `${userName}，那先不用把腦袋拉直。你現在${place}，旁邊又有點吵，我陪你先把注意力收回一小格：知道「我有點散，但我還在」就夠了。`;
+  }
+  const directRecallReply = memoryRecallReply(conversation, input, userName);
+  if (directRecallReply) return directRecallReply;
   if (/隨便聊|自然.*回|回我一句|先用.*自然/.test(input)) {
     return `${userName}，好，那我們今天不用把聊天聊得很有用。我先輕輕開個頭：你現在腦袋裡最先飄過的是一件小事、一點心情，還是單純想放空？`;
   }
@@ -2560,11 +2612,14 @@ function shouldUseGroundedReply(conversation, safety) {
   if (wantsCurrentEvents(input)) return true;
   if (/^(AI|人工智慧|什麼是AI|AI是什麼|人工智慧是什麼|什麼是人工智慧)/i.test(input.replace(/[，,。！？!?\s]/g, ""))) return true;
   if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /AIEXPO|AI\s*Expo|COMPUTEX/i.test(input)) return true;
+  if (/切成.*(今天晚上|今晚).*一小步|今天晚上能做的一小步|今晚能做的一小步|不那麼可怕的待辦/.test(input)) return true;
   if (/自己開一句|不要問卷式|用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型/i.test(input)) return true;
-  if (/記得|你還記得|剛剛.*(說什麼|去哪|買了什麼|吃什麼|喝什麼)|目前為止.*知道|幾件|三件/.test(input)) return true;
+  if (/記得|你還記得|剛剛.*(說什麼|去哪|買了什麼|吃什麼|喝什麼)|目前為止.*知道|幾件|三件|接回.*情緒|剛剛.*情緒|那個情緒|回答方式|喜歡.*回答|比較喜歡.*哪種/.test(input)) return true;
   if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|理解錯|修正一下|重來一次/.test(input)) return true;
   if (/一直.*安慰|只.*安慰|不是要被安慰|要事實|沒有回答問題|沒回答問題|答非所問|回覆不好/.test(input)) return true;
   if (/如果.*查不到|查不到.*怎麼|沒有資料.*怎麼|資料.*不可靠/.test(input)) return true;
+  if (/不要把我分類|像朋友.*回我|今天.*有點煩|有點煩|心裡.*堵/.test(input)) return true;
+  if (/腦袋.*散|有點散|旁邊.*吵|捷運上|公司樓下|先放慢再說/.test(input)) return true;
   if (/真的情緒|有情緒|你會感覺|你有意識|假裝懂/.test(input)) return true;
   return false;
 }
@@ -3349,9 +3404,9 @@ function extractExpectedMemoryTokens(input, recent) {
   const tokens = [];
   if (/去哪裡|去哪|去.*哪/.test(input)) {
     for (const text of [...prior].reverse()) {
-      const match = text.match(/去\s*([A-Za-z0-9][A-Za-z0-9\s._-]{1,50}|[一-龥A-Za-z0-9]{2,20})(?:玩|展|活動|嗎|，|,|。|\s|$)/iu);
-      if (match?.[1]) {
-        tokens.push(cleanText(match[1], 40).replace(/\s+/g, ""));
+      const place = extractVisitedPlace(text);
+      if (place) {
+        tokens.push(cleanText(place, 40).replace(/\s+/g, ""));
         break;
       }
     }

@@ -69,6 +69,14 @@ npm run regression:quality
 
 `smoke:quality` checks the shortest no-mock path. `regression:quality` covers the issues that previously appeared: fact questions turning into comfort templates, wrong event recall, AIEXPO/COMPUTEX confusion, unsafe dependency replies, mock fallback, and stale third-party providers.
 
+For broader coverage, sample the 10,000-question bank:
+
+```powershell
+$env:BANK_SAMPLE_URL="http://127.0.0.1:8787"
+$env:BANK_SAMPLE_LIMIT="90"
+npm run eval:sample
+```
+
 ## Product Architecture
 
 - Frontend: `index.html` chat UI, account UI, companion settings, conversation mode selector, memory panel, and developer diagnostics.
