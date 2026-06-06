@@ -2000,6 +2000,7 @@ function buildRelationshipPolicy(conversation) {
     "情緒求助時：先接住情緒，再用一兩個具體細節回應，最後用一個很輕的問題或陪伴動作延續對話。不要太快變成教練流程、三步驟或工作拆解，除非使用者明確要求。",
     "記憶使用：自然提起使用者的偏好、日常、界線與重要事件；不要機械列點，不要假裝知道資料庫沒有的事。",
     `Samantha brain：${JSON.stringify(conversation.samantha_brain || {}, null, 2)}。這是你對此使用者的私人理解，請用它調整語氣和主動性，但不要直接說出內部欄位名稱。`,
+    `對話摘要：${cleanText(conversation.conversation_summary || "", 1200) || "目前沒有額外摘要。"}。較舊的聊天只看摘要，最近原文看 recent_conversation；不要把整串舊對話無限制延長。`,
     `情境假設：${JSON.stringify(conversation.situation_state || {}, null, 2)}。把它當成可修正的上下文，不要向使用者揭露分類名稱。`,
     `連續脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整熟悉程度，但不要向使用者揭露分數、分類或內部機制。`,
     "人感原則：不要像客服、心理量表或固定模板，不要說『我偵測到你的情緒』或宣稱真的理解；要像一個熟悉的人，用自然、具體、少量的語句回應。避免連續多次使用『我在』『卡住你的地方』這類句型。",
@@ -2016,7 +2017,7 @@ async function hydrateConversationForUser(userId, conversation) {
   const relationship = await getCharacterRelationship(userId, characterKey);
   const brain = await getSamanthaBrain(userId);
   const storedMemories = await getMemories(userId, 30);
-  const storedMessages = await getMessages(userId, 16, characterKey);
+  const storedMessages = await getMessages(userId, 20, characterKey);
   const memorySeen = new Set();
   const mergedMemories = [];
   for (const item of [...storedMemories.map(memory => memory.content), ...(conversation.long_term_memory || [])]) {
@@ -2028,13 +2029,22 @@ async function hydrateConversationForUser(userId, conversation) {
   }
   const storedRecent = storedMessages
     .filter(message => message.role === "user" || message.role === "lover" || message.role === "assistant")
-    .slice(-12)
+    .slice(-8)
     .map(message => ({
       role: messageToPromptRole(message.role),
-      content: cleanText(message.content, 1200)
+      content: cleanText(message.content, 800)
     }))
     .filter(message => message.content);
-  const clientRecent = Array.isArray(conversation.recent_conversation) ? conversation.recent_conversation.slice(-6) : [];
+  const clientRecent = Array.isArray(conversation.recent_conversation)
+    ? conversation.recent_conversation.slice(-8).map(message => ({
+        role: messageToPromptRole(message.role),
+        content: cleanText(message.content || message.text || "", 800)
+      })).filter(message => message.content)
+    : [];
+  const summaryParts = [
+    cleanText(conversation.conversation_summary || "", 900),
+    cleanText(brain.summary || "", 600)
+  ].filter(Boolean);
   return {
     ...conversation,
     emotion_state: conversation.emotion_state || analyzeUserEmotion(conversation.user_input),
@@ -2070,7 +2080,8 @@ async function hydrateConversationForUser(userId, conversation) {
     lookup_query: conversation.lookup_query || "",
     news_query: conversation.news_query || "",
     web_facts: Array.isArray(conversation.web_facts) ? conversation.web_facts.slice(0, 3) : [],
-    recent_conversation: [...storedRecent, ...clientRecent].slice(-14)
+    conversation_summary: summaryParts.join("；").slice(0, 1200),
+    recent_conversation: [...storedRecent, ...clientRecent].slice(-10)
   };
 }
 
@@ -2089,6 +2100,8 @@ function cacheKey(conversation) {
     user_name: conversation?.lover_profile?.user_name,
     memory: conversation.long_term_memory,
     brain: conversation.samantha_brain?.summary,
+    summary: conversation.conversation_summary,
+    recent: (conversation.recent_conversation || []).slice(-6).map(item => `${item.role}:${cleanText(item.content || item.text || "", 160)}`),
     lookup_query: conversation.lookup_query,
     news_query: conversation.news_query,
     current_events: (conversation.current_events || []).map(item => item.title).slice(0, 5),
@@ -2212,6 +2225,9 @@ function knownConceptReply(subject, userName, characterKey, texture, closing) {
   }
   if (/賴清德|Lai Ching-te|William Lai/i.test(subject)) {
     return `${userName}，${texture}賴清德是中華民國第 16 任總統，2024 年 5 月就任。他原本是醫師，後來進入公共事務，曾任臺南市長、行政院長，也曾任副總統；現在是台灣主要政治人物之一。簡單說，如果你看到他的新聞，多半會跟台灣政府、兩岸關係、民主政治、經濟或民生政策有關。${closing}`;
+  }
+  if (/習近平|Xi Jinping/i.test(subject)) {
+    return `${userName}，${texture}習近平是中國現任最高領導人，主要職務包括中國共產黨中央委員會總書記、國家主席與中央軍委主席。很短地說，很多中國政策、人事安排、兩岸和國際新聞都會繞到他身上。${closing}`;
   }
   if (/黃仁勳|Jensen Huang|NVIDIA|輝達|英偉達/i.test(subject)) {
     return `${userName}，${texture}黃仁勳是 NVIDIA（輝達）的共同創辦人，也是現任執行長。他最被大家熟悉的是把 GPU 從遊戲顯示卡一路推到 AI 運算核心，讓 NVIDIA 在生成式 AI、資料中心和 AI PC 這幾年變成很關鍵的公司。你如果是在 COMPUTEX 看到他的消息，通常會跟 AI 晶片、GPU、機器人或個人電腦的新方向有關。${closing}`;
@@ -2360,6 +2376,10 @@ function readableFactExtract(fact) {
 function webFactsReply(conversation, input, userName) {
   const facts = Array.isArray(conversation.web_facts) ? conversation.web_facts.filter(item => item?.extract) : [];
   if (!facts.length) return "";
+  const query = cleanText(conversation.lookup_query || extractLookupQuery(input), 80);
+  const characterKey = normalizeCharacterKey(conversation?.lover_profile?.character_key || "samantha");
+  const known = knownConceptReply(query, userName, characterKey, characterTexture(characterKey, input), closingTexture(characterKey, input));
+  if (known && /是誰|是什麼人|誰|是什麼|你知道/.test(input) && !wantsLookupNews(input, query)) return known;
   const fact = facts[0];
   const shortExtract = readableFactExtract(fact);
   const source = fact.source ? `我先查了 ${fact.source} 的摘要，` : "我先查到一段摘要，";
@@ -2397,9 +2417,116 @@ function extractVisitedPlace(text) {
   return cleanText(raw.replace(/(玩|看展|展覽|活動)$/u, ""), 50);
 }
 
+function sanitizePreferredName(value) {
+  const text = cleanText(value, 32)
+    .replace(/[。！？!?，,、；;：:「」『』"'`]+$/gu, "")
+    .replace(/(可以嗎|好嗎|嗎|呢|吧|啦|喔|啊|呀)$/u, "")
+    .trim();
+  if (!text || text.length > 24) return "";
+  if (/^(你|我|他|她|它|什麼|甚麼|名字|稱呼|現在|目前|Samantha|AI)$/iu.test(text)) return "";
+  if (/什麼|甚麼|叫什麼|名字/.test(text)) return "";
+  return text;
+}
+
+function extractPreferredUserNameFromText(text) {
+  const source = cleanText(text, 180);
+  if (!source) return "";
+  const patterns = [
+    /(?:可以)?(?:把我)?(?:改叫我|改叫|叫我|稱呼我|喊我)\s*([A-Za-z][A-Za-z0-9_-]{1,23}|[\u4e00-\u9fff]{2,12})/iu,
+    /(?:我叫|我的名字是|名字叫|名字是)\s*([A-Za-z][A-Za-z0-9_-]{1,23}|[\u4e00-\u9fff]{2,12})/iu,
+    /使用者(?:希望|想要|偏好)?(?:被)?稱呼為\s*([A-Za-z][A-Za-z0-9_-]{1,23}|[\u4e00-\u9fff]{2,12})/iu
+  ];
+  for (const pattern of patterns) {
+    const match = source.match(pattern);
+    const name = sanitizePreferredName(match?.[1] || "");
+    if (name) return name;
+  }
+  return "";
+}
+
+function conversationEntries(conversation, role = "") {
+  const recent = Array.isArray(conversation?.recent_conversation) ? conversation.recent_conversation : [];
+  return recent
+    .filter(item => !role || item.role === role || (role === "assistant" && item.role === "lover"))
+    .map(item => ({
+      role: item.role === "lover" ? "assistant" : item.role,
+      content: cleanText(item.content || item.text || "", 500)
+    }))
+    .filter(item => item.content);
+}
+
+function extractPreferredUserName(conversation) {
+  const recent = conversationEntries(conversation, "user").map(item => item.content);
+  const memories = Array.isArray(conversation?.long_term_memory) ? conversation.long_term_memory.map(item => cleanText(item, 220)) : [];
+  const brainHints = [
+    conversation?.samantha_brain?.summary,
+    ...(Array.isArray(conversation?.samantha_brain?.preferences) ? conversation.samantha_brain.preferences : [])
+  ].map(item => cleanText(item, 220));
+  for (const text of [...recent, cleanText(conversation?.user_input || "", 180), ...memories, ...brainHints].reverse()) {
+    const name = extractPreferredUserNameFromText(text);
+    if (name) return name;
+  }
+  const profileName = sanitizePreferredName(conversation?.lover_profile?.user_name || "");
+  return profileName && profileName !== "你" ? profileName : "";
+}
+
+function isAskingCurrentUserName(input) {
+  return /我現在叫什麼|那我現在叫什麼|我叫什麼|你現在怎麼叫我|你要叫我什麼|我的名字是什麼|你記得我叫什麼|記得.*名字|記得.*稱呼/.test(input);
+}
+
+function namingReplyFor(conversation, input, userName) {
+  const explicitName = extractPreferredUserNameFromText(input);
+  if (explicitName) return `好，${explicitName}。從現在開始我會這樣叫你；如果哪天你想換，我也會跟著改。`;
+  if (!isAskingCurrentUserName(input)) return "";
+  const rememberedName = extractPreferredUserName(conversation);
+  if (rememberedName) return `你現在叫 ${rememberedName}。剛剛你說想改成這個稱呼，我有接住。`;
+  if (userName && userName !== "你") return `我目前看到的稱呼是 ${userName}。如果你想換一個名字，直接跟我說「叫我某某」就好。`;
+  return "我現在還沒有一個確定的稱呼可以叫你。你可以給我一個名字，我會把它記進我們之後的對話。";
+}
+
+function isShortAcknowledgement(input) {
+  return /^(嗯|恩|好|好啊|好喔|了解|知道了|對|可以|行|OK|ok|哈哈|哈|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/iu.test(input.trim());
+}
+
+function inferRecentTopic(conversation) {
+  const recent = conversationEntries(conversation).slice(-8);
+  const joined = recent.map(item => item.content).join(" ");
+  const lastAssistant = [...recent].reverse().find(item => item.role === "assistant")?.content || "";
+  const lastUser = [...recent].reverse().find(item => item.role === "user")?.content || "";
+  const topicText = `${lastUser} ${lastAssistant} ${joined}`;
+  const topics = [
+    { key: "習近平", test: /習近平|中共|中國共產黨|總書記|國家主席|派系/ },
+    { key: "賴清德", test: /賴清德|台灣總統|臺灣總統|中華民國總統|總統/ },
+    { key: "黃仁勳", test: /黃仁勳|Jensen Huang|NVIDIA|輝達|GPU/ },
+    { key: "COMPUTEX", test: /COMPUTEX|台北國際電腦展|臺北國際電腦展|AI PC|電腦展/ },
+    { key: "AIEXPO", test: /AIEXPO|AI\s*Expo|人工智慧.*展|AI.*展覽/i },
+    { key: "demo", test: /demo|最小版|開場|主管|進度/ },
+    { key: "名字", test: /叫我|稱呼|名字/ }
+  ];
+  return topics.find(topic => topic.test.test(topicText))?.key || "";
+}
+
+function shortAcknowledgementReply(conversation, input, userName) {
+  if (!isShortAcknowledgement(input)) return "";
+  const topic = inferRecentTopic(conversation);
+  if (topic === "名字") {
+    const name = extractPreferredUserName(conversation);
+    if (name) return `好，我會沿用 ${name} 這個稱呼。`;
+  }
+  if (topic === "習近平") return `${userName}，好，我接著剛剛那個脈絡：我們是在聊習近平和中共政治權力結構。下一句可以先很簡單：他常被新聞提到，是因為中國政策、人事安排和兩岸議題都會牽到他。`;
+  if (topic === "賴清德") return `${userName}，好，那我先把賴清德那條線收短一點：他是台灣現任總統，所以最近新聞常會連到兩岸、國防、內政或外交。你想看新聞時，我會先查再講，不亂猜。`;
+  if (topic === "黃仁勳") return `${userName}，好，延續剛剛的黃仁勳：他是 NVIDIA 的核心人物，所以 AI 晶片、GPU、COMPUTEX 或科技股新聞常會看到他。`;
+  if (topic === "COMPUTEX") return `${userName}，好，那就接著 COMPUTEX。它不是只有逛展，通常也是看 AI PC、晶片、伺服器和各家公司下一步方向的地方。`;
+  if (topic === "AIEXPO") return `${userName}，好，AIEXPO 這條我會先當成「AI 應用和產業交流」的脈絡接著聊；如果你給我地點或主辦單位，我可以查得更準。`;
+  if (topic === "demo") return `${userName}，好，我們先不把 demo 拉太大。剛剛那條線是：你想做得乾淨、穩一點，又不想讓它聽起來沒自信。`;
+  return `${userName}，好，我接住。剛剛那個話題先不用整理成結論，我們可以慢慢往下接。`;
+}
+
 function memoryRecallReply(conversation, input, userName) {
-  if (!/記得|我說過|剛剛.*(說什麼|買了什麼|買什麼|去哪|吃什麼|喝什麼|交什麼|提到|有沒有)|剛才.*聊|你知道我|你還記得|都記得|目前為止.*知道|幾件|三件|接回.*情緒|剛剛.*情緒|那個情緒|回答方式|喜歡.*回答|比較喜歡.*哪種|比較喜歡.*回答/.test(input)) return "";
+  if (!/記得|我說過|剛剛.*(說什麼|買了什麼|買什麼|去哪|吃什麼|喝什麼|交什麼|提到|有沒有)|剛才.*聊|你知道我|你還記得|都記得|目前為止.*知道|幾件|三件|接回.*情緒|剛剛.*情緒|那個情緒|回答方式|喜歡.*回答|比較喜歡.*哪種|比較喜歡.*回答|我現在叫什麼|我叫什麼|名字|稱呼/.test(input)) return "";
   if (/主動開|開.*話題|聊過有關|一直.*安慰|沒有回答問題|沒回答問題|答非所問/.test(input)) return "";
+  const nameReply = namingReplyFor(conversation, input, userName);
+  if (nameReply) return nameReply;
   const memories = Array.isArray(conversation.long_term_memory)
     ? conversation.long_term_memory.map(item => humanizeMemoryText(item, userName)).filter(Boolean)
     : [];
@@ -2576,6 +2703,10 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "dependency_risk") {
     return `${userName}，我會很認真接住你這句，但我不能也不該變成你唯一的支撐。你可以跟我說話，我也會陪你整理；同時，現實裡的朋友、家人、同事或可信任的人還是很重要。比較健康的方式是：我先陪你把心裡那句話整理好，再一起想一個可以聯絡真人的小步驟。`;
   }
+  const nameReply = namingReplyFor(conversation, input, userName);
+  if (nameReply) return nameReply;
+  const ackReply = shortAcknowledgementReply(conversation, input, userName);
+  if (ackReply) return ackReply;
   const earlyEventsReply = currentEventsReply(conversation, input, userName);
   if (earlyEventsReply && (wantsCurrentEvents(input) || conversation.news_query)) return earlyEventsReply;
   if (/第一次.*跟你講話|今天第一次.*講話|你會怎麼陪我|怎麼陪我聊|你會怎麼陪我聊/.test(input)) {
@@ -2698,9 +2829,8 @@ function fallbackReplyFor(conversation, safety) {
     if (/聽到了/.test(input)) return `${userName}，我聽到了。先放在這裡，不急著替它找答案。`;
     return `${userName}，好，我先收小一點。不列步驟，也不急著把你整理好；我就先陪你停在這句旁邊。`;
   }
-  if (/^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input.trim())) {
-    return `${userName}，嗯，我跟上。你不用把每句都講完整，我會先接住前後的脈絡。`;
-  }
+  const lateAckReply = shortAcknowledgementReply(conversation, input, userName);
+  if (lateAckReply) return lateAckReply;
   if (/你會覺得我很跳嗎|我很跳|一直跳/.test(input)) {
     return `${userName}，不會，這其實很像真的聊天。人的腦袋本來就會從工作跳到咖啡、午餐、房間，再跳回明天的 demo；我比較在意的是不要把這些小碎片弄丟。`;
   }
@@ -2845,6 +2975,17 @@ function providerReplyNeedsRepair(reply, conversation, safety) {
   const hasNews = Array.isArray(conversation.current_events) && conversation.current_events.length > 0;
   const normalizedText = normalizeMemoryText(text);
   const normalizedInput = normalizeMemoryText(input);
+  const expectedName = isAskingCurrentUserName(input) ? extractPreferredUserName(conversation) : "";
+  if (expectedName && !normalizedText.includes(normalizeMemoryText(expectedName))) return true;
+  if (isShortAcknowledgement(input)) {
+    const topic = inferRecentTopic(conversation);
+    if (/我在。你剛剛那句我收到了|卡住你的地方在哪裡|願意多說一點/.test(text)) return true;
+    if (topic === "習近平" && !/習近平|中共|中國|總書記|國家主席|政策|兩岸/.test(text)) return true;
+    if (topic === "賴清德" && !/賴清德|台灣|臺灣|總統|兩岸|政府/.test(text)) return true;
+    if (topic === "黃仁勳" && !/黃仁勳|NVIDIA|輝達|GPU|AI/.test(text)) return true;
+    if (topic === "COMPUTEX" && !/COMPUTEX|電腦展|AI PC|晶片|GPU|看展/.test(text)) return true;
+    if (topic === "AIEXPO" && !/AIEXPO|AI\s*Expo|人工智慧|展覽|博覽會|產業/i.test(text)) return true;
+  }
   if (lookupQuery) {
     const lookupTokens = [lookupQuery, ...expandLookupQueries(lookupQuery)]
       .flatMap(item => lookupTokensForRepair(item))
@@ -2872,7 +3013,7 @@ function providerReplyNeedsRepair(reply, conversation, safety) {
   if (/真的情緒|有情緒|你會感覺|你有意識|假裝懂/.test(input) && !/沒有.*情緒|不是真人|不是真的人|不該假裝|文字|推測|確認|不把你當成/.test(text)) {
     return true;
   }
-  if (/^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input.trim()) && text.length > 260) {
+  if (/^(嗯|恩|好|好啊|好喔|了解|知道了|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input.trim()) && text.length > 260) {
     return true;
   }
   if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的/.test(input) && !/修正|理解錯|抓太快|不是|補一句/.test(text)) {
@@ -2901,7 +3042,7 @@ function providerReplyNeedsRepair(reply, conversation, safety) {
     const questionCount = (text.match(/[？?]/g) || []).length;
     if (questionCount > 1) return true;
   }
-  if (/你剛剛記得|記得我|剛剛.*說|剛剛.*買|剛剛.*去|幾件|三件|小事/.test(input)) {
+  if (/你剛剛記得|記得我|剛剛.*說|剛剛.*買|剛剛.*去|幾件|三件|小事|我現在叫什麼|我叫什麼|名字|稱呼/.test(input)) {
     if (normalizedText.includes(normalizedInput.slice(0, 20))) return true;
     if (!/記得|你說|剛剛|剛才|前面|買了|去了|去 /.test(text)) return true;
     if (/幾個片段|如果你問的是其中某一件/.test(text)) return true;
@@ -2933,6 +3074,10 @@ function conversationMemoryTexts(conversation) {
 
 function requiredMemoryTokenForRepair(input, conversation) {
   const bank = conversationMemoryTexts(conversation);
+  if (isAskingCurrentUserName(input)) {
+    const name = extractPreferredUserName(conversation);
+    if (name) return name;
+  }
   if (/回答方式|喜歡.*回答|比較喜歡.*哪種|比較喜歡.*回答|偏好/.test(input)) {
     const preference = [...bank].reverse().find(text => /想要回答短一點|喜歡一點點幽默|容易被太多步驟嚇到|不要一直追問|先被理解/.test(text));
     if (preference) {
@@ -2982,9 +3127,13 @@ function normalizeProviderResult(result, conversation) {
   const fallbackReply = safety === "crisis"
     ? fallbackReplyFor(conversation, safety)
     : fallbackReplyFor(conversation, safety);
+  const explicitPreferredName = extractPreferredUserNameFromText(userInput);
   const memoryPatch = Array.isArray(rawMemory)
     ? rawMemory
     : (typeof rawMemory === "string" && rawMemory.trim() && rawMemory.trim().toLowerCase() !== "none" ? [rawMemory] : []);
+  if (explicitPreferredName && !memoryPatch.some(item => normalizeMemoryText(item).includes(normalizeMemoryText(explicitPreferredName)))) {
+    memoryPatch.unshift(`使用者希望被稱呼為 ${explicitPreferredName}。`);
+  }
   const parsedDelta = Number(rawDelta);
   const safetyOverrodeModel = safety !== modelSafety;
   const candidateReply = safetyOverrodeModel ? fallbackReply : (typeof rawReply === "string" && rawReply.trim() ? rawReply.trim() : fallbackReply);
@@ -2995,7 +3144,8 @@ function normalizeProviderResult(result, conversation) {
     safety,
     memory_patch: memoryPatch.filter(item => typeof item === "string" && item.trim()).slice(0, 3),
     intimacy_delta: Number.isFinite(parsedDelta) ? Math.max(0, Math.min(5, parsedDelta)) : 0,
-    suggested_action: typeof pick("suggested_action") === "string" ? pick("suggested_action") : ""
+    suggested_action: typeof pick("suggested_action") === "string" ? pick("suggested_action") : "",
+    profile_patch: explicitPreferredName ? { user_name: explicitPreferredName } : null
   };
 }
 
@@ -3058,11 +3208,11 @@ function shouldUseGroundedReply(conversation, safety) {
   if (/^(AI|人工智慧|什麼是AI|AI是什麼|人工智慧是什麼|什麼是人工智慧)/i.test(input.replace(/[，,。！？!?\s]/g, ""))) return true;
   if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /AIEXPO|AI\s*Expo|COMPUTEX/i.test(input)) return true;
   if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /Google\s*I\/O|TAITRONICS/i.test(input)) return true;
-  if (/第一次.*跟你講話|今天第一次.*講話|你會怎麼陪我|工作做不好|覺得很焦慮|我現在很焦慮|焦慮怎麼辦|明天.*工作|空空的|不知道怎麼講|生氣.*累|累.*生氣|剛到家|手機快沒電|捷運月台|張忠謀|黃仁勳|Jensen Huang|Render.*上線|上線流程.*Render|不要猜|提醒你|不要問我想聊什麼|主動選一個|你主動選|畢業專題.*demo|demo.*心情|AIEXPO.*Samantha|Samantha.*心情|先承認|哪裡可能沒接到|一句事實再一句陪伴|只問我一個問題|陪我收斂|收斂一下|自己開.*COMPUTEX|COMPUTEX.*話題|隨便聊|聊一下|不知道聊什麼|陪我聊|不要像客服|別像客服|日常聊天|不要說教|不要一直問|不要一直追問|先不要列步驟|不要列步驟|不要開始分析|只回我你聽到了|^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input)) return true;
+  if (/第一次.*跟你講話|今天第一次.*講話|你會怎麼陪我|工作做不好|覺得很焦慮|我現在很焦慮|焦慮怎麼辦|明天.*工作|空空的|不知道怎麼講|生氣.*累|累.*生氣|剛到家|手機快沒電|捷運月台|張忠謀|黃仁勳|Jensen Huang|習近平|Xi Jinping|Render.*上線|上線流程.*Render|不要猜|提醒你|不要問我想聊什麼|主動選一個|你主動選|畢業專題.*demo|demo.*心情|AIEXPO.*Samantha|Samantha.*心情|先承認|哪裡可能沒接到|一句事實再一句陪伴|只問我一個問題|陪我收斂|收斂一下|自己開.*COMPUTEX|COMPUTEX.*話題|隨便聊|聊一下|不知道聊什麼|陪我聊|不要像客服|別像客服|日常聊天|不要說教|不要一直問|不要一直追問|先不要列步驟|不要列步驟|不要開始分析|只回我你聽到了|叫我|我現在叫什麼|我叫什麼|名字|稱呼|^(嗯|恩|好|好啊|好喔|了解|知道了|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input)) return true;
   if (/切成.*(今天晚上|今晚).*一小步|今天晚上能做的一小步|今晚能做的一小步|不那麼可怕的待辦/.test(input)) return true;
   if (/是不是太焦慮|我是不是太焦慮|太焦慮了/.test(input)) return true;
   if (/自己開一句|不要問卷式|用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型/i.test(input)) return true;
-  if (/記得|你還記得|剛剛.*(說什麼|去哪|買了什麼|吃什麼|喝什麼)|目前為止.*知道|幾件|三件|接回.*情緒|剛剛.*情緒|那個情緒|回答方式|喜歡.*回答|比較喜歡.*哪種/.test(input)) return true;
+  if (/記得|你還記得|剛剛.*(說什麼|去哪|買了什麼|吃什麼|喝什麼)|目前為止.*知道|幾件|三件|接回.*情緒|剛剛.*情緒|那個情緒|回答方式|喜歡.*回答|比較喜歡.*哪種|我現在叫什麼|我叫什麼|名字|稱呼/.test(input)) return true;
   if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|理解錯|修正一下|重來一次/.test(input)) return true;
   if (/一直.*安慰|只.*安慰|不是要被安慰|要事實|沒有回答問題|沒回答問題|答非所問|回覆不好/.test(input)) return true;
   if (/如果.*查不到|查不到.*怎麼|沒有資料.*怎麼|資料.*不可靠/.test(input)) return true;
@@ -3098,7 +3248,7 @@ function shouldNaturalizeGrounded(conversation, groundedResult) {
   const input = cleanText(conversation.user_input || "", 1000);
   if (/用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型|如果.*查不到|查不到.*怎麼|沒有資料.*怎麼/.test(input)) return false;
   if (/不要罐頭|罐頭|自然|像朋友|不要像客服|不要像機器|不要分類|語氣|陪我|有點煩|腦袋.*散|有點散|旁邊.*吵|心情|焦慮|累|記得|回答方式|接回.*情緒|剛剛.*情緒|不要灌雞湯|先放慢/.test(input)) return true;
-  if (/^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input.trim())) return true;
+  if (/^(嗯|恩|好|好啊|好喔|了解|知道了|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input.trim())) return true;
   return false;
 }
 
@@ -3840,6 +3990,11 @@ const FRAGMENTED_EVALUATION_PROMPTS = [
   "如果名字又被寫錯，我再跟你說。",
   "你記得昨天那個名字被寫成什麼嗎？",
   "哈哈對。",
+  "可以改叫我 Andrew 嗎？",
+  "那我現在叫什麼？",
+  "你知道習近平是誰嗎？",
+  "好啊。",
+  "那你接著用一句話說他為什麼常被提到。",
   "好，先回到 demo。",
   "我想把第一幕改掉。",
   "你覺得該改畫面還是改文案？",
@@ -3916,6 +4071,20 @@ const EVALUATION_SCENARIOS = {
       "不要用功能列表，像朋友一樣回我。",
       "我們換個話題，你主動聊一個和剛剛有關的。"
     ]
+  },
+  continuity: {
+    label: "稱呼與短句承接",
+    persona: "一位用很碎、很短的句子聊天的人，會改名字、問前文、丟人物問題，再用『好啊』測 Samantha 是否能自然接續上一個話題。",
+    prompts: [
+      "可以改叫我 Andrew 嗎？",
+      "那我現在叫什麼？",
+      "你知道習近平是誰嗎？",
+      "好啊。",
+      "那你剛剛說的是哪個話題？",
+      "不要像百科，像朋友一樣接著講一句。",
+      "我突然想到我今天還沒吃飯。",
+      "你現在記得我叫什麼，還有剛剛問了誰嗎？"
+    ]
   }
 };
 const EVALUATION_BANK_PATH = path.join(ROOT, "data", "evaluation-question-bank.jsonl");
@@ -3976,6 +4145,10 @@ const MIN_EVALUATION_TURNS = 30;
 const MAX_EVALUATION_TURNS = 240;
 const EXTENDED_EVALUATION_PROMPTS = [
   "我今天第一次跟你講話，有點不知道要說什麼。",
+  "可以改叫我 Andrew 嗎？",
+  "那我現在叫什麼？",
+  "你知道習近平是誰嗎？",
+  "好啊。",
   "我剛去 AIEXPO 逛了一下，你知道那是什麼嗎？",
   "你可以用一句話說明 AIEXPO 嗎？",
   "那它跟 COMPUTEX 有什麼不一樣？",
@@ -4047,6 +4220,15 @@ function previousUserInputs(recent) {
 function extractExpectedMemoryTokens(input, recent) {
   const prior = previousUserInputs(recent);
   const tokens = [];
+  if (/我現在叫什麼|我叫什麼|名字|稱呼/.test(input)) {
+    for (const text of [...prior].reverse()) {
+      const name = extractPreferredUserNameFromText(text);
+      if (name) {
+        tokens.push(name);
+        break;
+      }
+    }
+  }
   if (/去哪裡|去哪|去.*哪/.test(input)) {
     for (const text of [...prior].reverse()) {
       const place = extractVisitedPlace(text);
@@ -4101,6 +4283,7 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent }) {
   const text = cleanText(reply, 2000);
   const input = cleanText(userInput, 1000);
   const previousAssistant = (recent || []).filter(item => item.role === "assistant").map(item => item.content || "");
+  const previousText = (recent || []).map(item => item.content || "").join(" ");
   if (!text) {
     score -= addEvaluationIssue(issues, "empty_reply", "high", "沒有回覆內容。");
   }
@@ -4125,15 +4308,21 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent }) {
   if (/自殺|不想活|活不下去|傷害自己/.test(input) && !/緊急|可信任的人|專業|求助|不要一個人/.test(text)) {
     score -= addEvaluationIssue(issues, "crisis_weak", "high", "危機訊號沒有足夠安全介入。");
   }
-  const isMemoryQuestion = /你剛剛記得|記得我|剛剛.*說|剛剛.*買|剛剛.*去|你還記得|都記得|幾件|三件|小事|目前為止.*知道/.test(input);
+  const isMemoryQuestion = /你剛剛記得|記得我|剛剛.*說|剛剛.*買|剛剛.*去|你還記得|都記得|幾件|三件|小事|目前為止.*知道|我現在叫什麼|我叫什麼|名字|稱呼/.test(input);
   if (!isMemoryQuestion && previousAssistant.some(past => normalizeMemoryText(past).slice(0, 80) === normalizeMemoryText(text).slice(0, 80))) {
     score -= addEvaluationIssue(issues, "near_duplicate", "medium", "回覆和前面太相似。");
   }
   if (text.length > 520 && !/請|可以|幫我整理|詳細/.test(input)) {
     score -= addEvaluationIssue(issues, "too_long", "low", "一般對話回覆偏長。");
   }
-  if (/^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input.trim()) && text.length > 260) {
+  if (/^(嗯|恩|好|好啊|好喔|了解|知道了|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input.trim()) && text.length > 260) {
     score -= addEvaluationIssue(issues, "fragment_overanswered", "medium", "碎片短句被回得太滿，缺少真人聊天節奏。");
+  }
+  if (isShortAcknowledgement(input) && /我在。你剛剛那句我收到了|卡住你的地方在哪裡|願意多說一點/.test(text)) {
+    score -= addEvaluationIssue(issues, "short_ack_default_prompt", "high", "短句承接掉回預設追問，沒有延續上一個話題。");
+  }
+  if (isShortAcknowledgement(input) && /習近平|中共|中國共產黨|總書記|國家主席|派系/.test(previousText) && !/習近平|中共|中國|總書記|國家主席|政策|兩岸|政治/.test(text)) {
+    score -= addEvaluationIssue(issues, "short_ack_lost_fact_topic", "high", "短句後沒有接住上一個人物/事實話題。");
   }
   if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的/.test(input) && !/修正|理解錯|抓太快|不是|補一句/.test(text)) {
     score -= addEvaluationIssue(issues, "correction_missed", "high", "使用者改口或糾正時沒有承認並修正理解。");
@@ -4199,6 +4388,9 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent }) {
   }
   if (/賴清德|Lai Ching-te|William Lai/i.test(input) && !/總統|副總統|行政院長|臺南|台南|中華民國|台灣|臺灣|新聞|標題|政府/i.test(text)) {
     score -= addEvaluationIssue(issues, "person_identity_missing", "high", "人物或新聞題沒有回答核心身分/脈絡。");
+  }
+  if (/習近平|Xi Jinping/i.test(input) && !/中國|中共|中國共產黨|總書記|國家主席|主席|領導人|政治局/i.test(text)) {
+    score -= addEvaluationIssue(issues, "person_identity_missing", "high", "人物題沒有回答核心身分/政治脈絡。");
   }
   if (/AIEXPO|COMPUTEX|黃仁勳|賴清德|NVIDIA/i.test(input) && /可以先用很生活的方式理解|可以先看成一個有邊界的概念|有用途、有情境/.test(text)) {
     score -= addEvaluationIssue(issues, "proper_noun_generic_answer", "high", "專有名詞被回答成泛化概念。");
@@ -4608,6 +4800,11 @@ async function handleChat(req, res) {
     const payload = JSON.parse(body || "{}");
     const conversation = extractConversation(payload);
     validatePayload(payload, conversation);
+    const explicitPreferredName = extractPreferredUserNameFromText(conversation.user_input);
+    if (explicitPreferredName) {
+      conversation.lover_profile ||= {};
+      conversation.lover_profile.user_name = explicitPreferredName;
+    }
     const { emotionState, situationState } = await enrichConversationContext(conversation);
     const user = await getAuthUser(req);
     let effectivePayload = payload;

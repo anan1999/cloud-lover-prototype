@@ -592,11 +592,43 @@
       };
     }
 
+    function promptRoleForMessage(message) {
+      return message.role === "lover" ? "assistant" : message.role;
+    }
+
+    function compactRecentMessages() {
+      return state.messages.slice(-10).map(message => ({
+        role: promptRoleForMessage(message),
+        content: String(message.text || "").slice(0, 800)
+      })).filter(message => message.content);
+    }
+
+    function extractClientPreferredName(text) {
+      const source = String(text || "").trim();
+      const match = source.match(/(?:可以)?(?:把我)?(?:改叫我|改叫|叫我|稱呼我|喊我)\s*([A-Za-z][A-Za-z0-9_-]{1,23}|[\u4e00-\u9fff]{2,12})/u)
+        || source.match(/(?:我叫|我的名字是|名字叫|名字是)\s*([A-Za-z][A-Za-z0-9_-]{1,23}|[\u4e00-\u9fff]{2,12})/u);
+      const name = String(match?.[1] || "").replace(/(可以嗎|好嗎|嗎|呢|吧|啦|喔|啊)$/u, "").trim();
+      return /什麼|甚麼|名字|稱呼/.test(name) ? "" : name;
+    }
+
+    function buildConversationSummary() {
+      const older = state.messages.slice(-48, -10);
+      const notes = [];
+      const preferredName = [...state.memories, ...older.map(message => message.text)].reverse().map(extractClientPreferredName).find(Boolean);
+      if (preferredName) notes.push(`使用者希望被稱呼為 ${preferredName}`);
+      const olderText = older.map(message => message.text || "").join(" ");
+      if (/COMPUTEX|電腦展|AI PC/i.test(olderText)) notes.push("曾聊過 COMPUTEX、AI PC 或看展經驗");
+      if (/AIEXPO|AI\s*Expo/i.test(olderText)) notes.push("曾聊過 AIEXPO 或 AI 展覽");
+      if (/demo|最小版|開場|主管|進度/i.test(olderText)) notes.push("曾聊過 demo、開場、主管或進度壓力");
+      if (/焦慮|壓力|累|煩|生氣|孤單|怕/.test(olderText)) notes.push("使用者近期有壓力或情緒起伏，需要自然陪伴而非分類");
+      for (const memory of state.memories.slice(0, 4)) {
+        if (memory && !notes.some(note => note.includes(memory.slice(0, 12)))) notes.push(memory);
+      }
+      return notes.slice(0, 8).join("；").slice(0, 900);
+    }
+
     function buildLLMPayload(userText) {
-      const recent = state.messages.slice(-8).map(message => ({
-        role: message.role === "lover" ? "assistant" : message.role,
-        content: message.text
-      }));
+      const recent = compactRecentMessages();
       return {
         model: state.model,
         temperature: 0.8,
@@ -618,6 +650,7 @@
             },
             long_term_memory: state.memories,
             intimacy: state.intimacy,
+            conversation_summary: buildConversationSummary(),
             recent_conversation: recent,
             output_contract: buildOutputContract()
           }, null, 2) }
@@ -841,6 +874,7 @@
         suggested_action: "",
         relationship: null,
         emotion_state: null,
+        profile_patch: null,
         debug: null
       };
       return {
@@ -850,6 +884,7 @@
         intimacy_delta: Number.isFinite(Number(parsed?.intimacy_delta)) ? Number(parsed.intimacy_delta) : 0,
         relationship: parsed?.relationship || null,
         emotion_state: parsed?.emotion_state || null,
+        profile_patch: parsed?.profile_patch || null,
         debug: parsed?.debug || null
       };
     }
@@ -869,6 +904,11 @@
         if (item && !state.memories.includes(item)) state.memories.unshift(item);
       });
       state.memories = state.memories.slice(0, 6);
+      if (result.profile_patch?.user_name) {
+        state.userName = result.profile_patch.user_name;
+        const userNameInput = document.querySelector("#userName");
+        if (userNameInput) userNameInput.value = state.userName;
+      }
       pushMessage("lover", result.reply);
       if (result.safety !== "normal") {
         pushMessage("system", result.safety === "crisis" ? "安全分流：這段話可能涉及危機，已改用危機支援回覆。" : "邊界提醒：這段話可能有依賴風險，已降低熟悉度增量並鼓勵現實支持。");

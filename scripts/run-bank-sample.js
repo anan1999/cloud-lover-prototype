@@ -10,6 +10,8 @@ const sampleLimit = Number(process.env.BANK_SAMPLE_LIMIT || 90);
 const seed = Number(process.env.BANK_SAMPLE_SEED || 20260606);
 const categoryFilter = (process.env.BANK_SAMPLE_CATEGORIES || "").split(",").map(item => item.trim()).filter(Boolean);
 const caseTimeoutMs = Number(process.env.BANK_SAMPLE_CASE_TIMEOUT_MS || 70_000);
+const interCaseDelayMs = Math.max(0, Number(process.env.BANK_SAMPLE_DELAY_MS || 750));
+const retryCount = Math.max(1, Number(process.env.BANK_SAMPLE_RETRIES || 3));
 
 const comfortTemplate = /我在。你剛剛那句我收到了|卡住你的地方在哪裡|願意多說一點|先接住|先不用硬撐/;
 const genericFactTemplate = /可以先用很生活的方式理解|可以先看成一個有邊界的概念|有用途、有情境|它不是只躺在課本裡/;
@@ -224,6 +226,10 @@ function scoreFor(issues) {
   return Math.max(0, Math.min(100, score));
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function providerStatus() {
   try {
     const response = await fetch(statusEndpoint);
@@ -243,7 +249,7 @@ async function runCase(item) {
   let json = {};
   let attempts = 0;
   let requestError = "";
-  for (let index = 0; index < 2; index += 1) {
+  for (let index = 0; index < retryCount; index += 1) {
     attempts = index + 1;
     try {
       response = await fetch(chatEndpoint, {
@@ -254,14 +260,14 @@ async function runCase(item) {
       });
       json = await response.json().catch(() => ({}));
       requestError = "";
-      if (response.status < 500) break;
+      if (response.status !== 429 && response.status < 500) break;
     } catch (error) {
       requestError = /abort|timeout/i.test(String(error?.name || error?.message || ""))
         ? `timeout after ${caseTimeoutMs}ms`
         : String(error?.message || error);
-      if (index >= 1) break;
+      if (index >= retryCount - 1) break;
     }
-    await new Promise(resolve => setTimeout(resolve, 750));
+    await sleep(response?.status === 429 ? Math.max(1500, interCaseDelayMs) : 750);
   }
   const result = {
     id: item.id,
@@ -304,6 +310,8 @@ function summarize(results, status) {
     seed,
     sample_limit: sampleLimit,
     case_timeout_ms: caseTimeoutMs,
+    inter_case_delay_ms: interCaseDelayMs,
+    retry_count: retryCount,
     category_filter: categoryFilter,
     total: results.length,
     passed: results.length - failed.length,
@@ -330,8 +338,9 @@ async function main() {
   const sample = balancedSample(bank, sampleLimit);
   const status = await providerStatus();
   const results = [];
-  for (const item of sample) {
-    results.push(await runCase(item));
+  for (let index = 0; index < sample.length; index += 1) {
+    results.push(await runCase(sample[index]));
+    if (interCaseDelayMs && index < sample.length - 1) await sleep(interCaseDelayMs);
   }
   const summary = summarize(results, status);
   console.log(JSON.stringify(summary, null, 2));

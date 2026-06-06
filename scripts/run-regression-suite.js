@@ -52,6 +52,32 @@ const cases = [
     mustNot: [/情緒|畫面本身|感覺/, comfortTemplate]
   },
   {
+    name: "name_change_recall",
+    input: "那我現在叫什麼？",
+    recent: [
+      { role: "user", content: "可以改叫我 Andrew 嗎？" },
+      { role: "assistant", content: "好，Andrew。從現在開始我會這樣叫你。" }
+    ],
+    must: [/Andrew/],
+    mustNot: [comfortTemplate, /AN，我在/]
+  },
+  {
+    name: "short_ack_after_xi_fact",
+    input: "好啊。",
+    recent: [
+      { role: "user", content: "你知道習近平是誰嗎？" },
+      { role: "assistant", content: "習近平是中國現任最高領導人，包含中共中央總書記、國家主席與中央軍委主席等職務。" }
+    ],
+    must: [/習近平|中共|中國|總書記|國家主席|兩岸|政策/],
+    mustNot: [comfortTemplate, genericFactTemplate]
+  },
+  {
+    name: "xi_identity",
+    input: "你知道習近平是誰嗎？",
+    must: [/中國|中共|中國共產黨|總書記|國家主席|主席|領導人/],
+    mustNot: [comfortTemplate, genericFactTemplate]
+  },
+  {
     name: "memory_small_fact",
     input: "你目前為止記得我三件小事嗎？",
     recent: [
