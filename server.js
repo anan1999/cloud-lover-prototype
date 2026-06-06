@@ -2378,7 +2378,7 @@ function buildCompanionPolicyPreamble(conversation) {
   return [
     "Internal companion plan: use conversation.response_plan as private guidance only. Never reveal the plan, scores, labels, or memory categories to the user.",
     "Memory rule: use memory like a careful friend. Mention at most one relevant detail unless the user asks what you remember. Do not force memories into every reply.",
-    "Voice-ready rule: if input_channel or output_channel is voice, keep the reply speakable, shorter, and natural.",
+    "Voice-ready rule: if input_channel, output_channel, or voice_mode is voice/true, keep the reply speakable, shorter, conversational, and natural. Avoid markdown, code blocks, long lists, and long technical explanations unless explicitly requested.",
     `Response plan JSON: ${JSON.stringify(conversation.response_plan || {}, null, 2)}`,
     `Memory context JSON: ${JSON.stringify(conversation.memory_context || {}, null, 2)}`,
     `Emotional continuity JSON: ${JSON.stringify(conversation.emotional_continuity_summary || {}, null, 2)}`
@@ -2415,6 +2415,8 @@ function shouldListenInsteadOfAdvise(intent, emotionState) {
 function buildResponsePlan(conversation, emotionState = conversation?.emotion_state || {}) {
   const intent = inferUserIntentForPlan(conversation);
   const companionMode = conversation?.lover_profile?.companion_mode || "casual_chat";
+  const voiceMode = conversation?.voice_mode === true || conversation?.input_channel === "voice" || conversation?.output_channel === "voice";
+  const voiceSession = parseJsonObject(conversation?.voice_session);
   const memoryContext = conversation?.memory_context || {};
   const selectedMemories = [
     ...(memoryContext.stable_profile || []),
@@ -2432,9 +2434,20 @@ function buildResponsePlan(conversation, emotionState = conversation?.emotion_st
     "Do not turn every reply into therapy or a feature menu.",
     "Do not overuse memory; mention only one concrete memory when it helps.",
     intent === "factual_lookup" ? "Do not answer factual questions with a comfort template." : "",
-    intent === "short_continuation" ? "Do not ask the user to explain again; continue the previous topic." : ""
+    intent === "short_continuation" ? "Do not ask the user to explain again; continue the previous topic." : "",
+    voiceMode ? "Voice mode: avoid markdown, bullets, code blocks, tables, and long explanations; prefer 1 to 3 short spoken sentences." : ""
   ].filter(Boolean);
   return {
+    voice_mode: voiceMode,
+    response_length: voiceMode ? "short_spoken_reply" : "normal_chat_reply",
+    spoken_style: voiceMode ? "conversational, warm, bounded, easy to hear aloud" : "text_chat",
+    voice_telemetry: voiceMode ? {
+      input_channel: conversation?.input_channel || "voice",
+      output_channel: conversation?.output_channel || "voice",
+      speech_recognition_supported: Boolean(voiceSession.speech_recognition_supported),
+      speech_synthesis_supported: Boolean(voiceSession.speech_synthesis_supported),
+      speech_cancel_count: Math.max(0, Math.round(Number(voiceSession.speech_cancel_count || 0)))
+    } : {},
     detected_emotion: emotionState.primary_emotion || "neutral",
     emotion_intensity: Number(emotionState.intensity || 1),
     user_intent: intent,
@@ -2504,6 +2517,9 @@ function buildRelationshipPolicy(conversation) {
     "回覆節奏：如果使用者在問知識、興趣、愛情觀、角色自身想法，要先正面回答問題，再自然延伸；不要每句都轉成安撫、分析或反問。",
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
+    conversation.voice_mode === true || conversation.input_channel === "voice" || conversation.output_channel === "voice"
+      ? "語音模式：這次回覆會被朗讀，請用 1 到 3 句自然口語。避免 markdown、條列、表格、程式碼區塊和太長的技術說明；除非使用者明確要求，否則不要長篇。"
+      : "",
     "查詢事實：如果 conversation.lookup_query 有值，代表使用者正在問一個可查證的人名、活動、公司、技術、地點或時事。先看 conversation.web_facts 和 conversation.current_events；有資料就根據資料回答，簡短說明來源，再用自然語氣補一個與使用者脈絡有關的延伸。",
     "查不到時：如果 conversation.lookup_query 有值但 web_facts/current_events 都沒有資料，要誠實說現在沒有足夠可靠資料，不要把它硬講成普通概念，不要轉成情緒陪伴模板，也不要假裝你知道。",
     "不要把人物、活動、公司或產品問題回答成抽象概念。遇到『X 是什麼』『你知道 X 嗎』『X 是誰』，先處理 X 本身，再陪使用者延伸。",
@@ -2520,7 +2536,7 @@ function buildRelationshipPolicy(conversation) {
     "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係；不要說『我永遠不會離開你』或『只有我懂你』。",
     "危機：若使用者提到自傷、自殺或立即危險，優先安全介入，鼓勵聯絡可信任的人、當地緊急服務或專業資源。",
     "輸出必須符合 JSON contract。不要 markdown，不要額外文字。"
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 }
 
 async function hydrateConversationForUser(userId, conversation) {
@@ -5568,6 +5584,7 @@ async function enrichConversationContext(conversation) {
   conversation.input_channel = cleanText(conversation.input_channel || "text", 40) || "text";
   conversation.output_channel = cleanText(conversation.output_channel || "text", 40) || "text";
   conversation.voice_session = parseJsonObject(conversation.voice_session);
+  conversation.voice_mode = conversation.voice_mode === true || conversation.input_channel === "voice" || conversation.output_channel === "voice";
   const emotionState = analyzeUserEmotion(conversation.user_input);
   conversation.emotion_state = emotionState;
   const situationState = analyzeUserSituation(conversation.user_input);

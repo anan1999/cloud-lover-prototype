@@ -111,10 +111,15 @@ Private response planning:
 - The plan tracks emotion, intent, mode, selected memories, strategy, follow-up choice, whether to listen first or advise, and safety notes.
 - The model is told not to reveal these labels. They are scaffolding for more natural continuity.
 
-Voice-ready fields:
+Voice-lite MVP:
 
-- Chat payloads and stored messages include `input_channel`, `output_channel`, and a `voice_session` placeholder.
-- Text is still the default MVP path. STT/TTS can be added later without changing the core chat schema again.
+- The chat UI now includes optional browser-native speech input and Samantha voice reply.
+- Speech input uses `SpeechRecognition` / `webkitSpeechRecognition` when available; unsupported browsers fall back to text chat.
+- Voice reply uses `window.speechSynthesis`, strips markdown/code blocks before speaking, and can be cancelled.
+- Voice settings live in `localStorage`: `enable_voice_reply`, `voice_rate`, `voice_pitch`, and `preferred_voice_lang`.
+- Chat payloads include `input_channel`, `output_channel`, `voice_mode`, and `voice_session` metadata.
+- Raw audio is not stored; only the final transcript is sent as a normal user message.
+- More details: [docs/voice-lite.md](docs/voice-lite.md).
 
 Task model routing design:
 

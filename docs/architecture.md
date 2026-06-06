@@ -120,17 +120,21 @@ APIs:
 
 Supported actions are `create`, `update`, `delete`, `incorrect`, `do_not_mention`, and `clear`.
 
-## Voice-Ready Interfaces
+## Voice-lite Interfaces
 
-The chat payload includes:
+The MVP now implements optional browser-native voice without adding a provider account. The chat payload includes:
 
 - `input_channel`
 - `output_channel`
+- `voice_mode`
 - `voice_session.stt_service`
 - `voice_session.tts_service`
 - `voice_session.voice_session_service`
+- `voice_session.speech_recognition_supported`
+- `voice_session.speech_synthesis_supported`
+- `voice_session.speech_cancel_count`
 
-The MVP still uses text by default, but the database and prompt layer are ready for speech-to-text and text-to-speech without another schema break.
+The frontend uses `SpeechRecognition` / `webkitSpeechRecognition` for speech-to-text when available and `speechSynthesis` for text-to-speech. Text remains the default path. No raw audio is stored; only the final transcript is sent to the existing chat API. When `voice_mode` is true, `response_plan` asks Samantha for shorter, more conversational spoken replies with less markdown.
 
 Legacy column names such as `lover_name` are intentionally retained to avoid breaking deployed data. In product logic they mean Samantha companion name and familiarity context.
 

@@ -8,6 +8,7 @@
     "start": "node server.js",
     "dev": "node server.js",
     "check": "node --check server.js",
+    "voice:smoke": "node scripts/run-voice-smoke.js",
     "generate:eval-bank": "node scripts/generate-evaluation-bank.js",
     "smoke:quality": "node scripts/run-quality-smoke.js",
     "regression:quality": "node scripts/run-regression-suite.js",

@@ -211,6 +211,35 @@
       border: 1px solid var(--line);
     }
     .icon-btn { width: 38px; height: 38px; padding: 0; display: inline-grid; place-items: center; }
+    .voice-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .voice-controls label {
+      min-height: 34px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.055);
+      color: var(--text);
+      font-size: 13px;
+    }
+    .voice-controls input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--teal); }
+    .voice-controls input[type="range"] { width: 82px; min-height: 0; padding: 0; accent-color: var(--teal); }
+    .voice-controls select { width: auto; min-width: 92px; min-height: 34px; }
+    .mic-listening { color: #101416; background: var(--teal); box-shadow: 0 0 0 3px rgba(62,212,199,.18); }
+    .voice-note, .voice-preview { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .voice-preview {
+      padding: 8px 10px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.04);
+    }
     .input-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; }
     textarea, input, select {
       width: 100%;
@@ -374,6 +403,30 @@
           <button data-prompt="我今天有點亂，幫我一起釐清。">釐清</button>
           <button data-prompt="聊聊今天的時事，挑一個值得想的。">時事</button>
         </div>
+        <div class="voice-controls" aria-label="語音控制">
+          <button class="icon-btn" id="micBtn" type="button" title="語音輸入" aria-label="語音輸入">Mic</button>
+          <label for="voiceReplyToggle">
+            <input id="voiceReplyToggle" type="checkbox">
+            Samantha voice reply
+          </label>
+          <button class="ghost" id="voiceStopBtn" type="button">停止語音</button>
+          <label for="voiceRateInput">語速
+            <input id="voiceRateInput" type="range" min="0.75" max="1.35" step="0.05" value="1">
+          </label>
+          <label for="voicePitchInput">音高
+            <input id="voicePitchInput" type="range" min="0.75" max="1.25" step="0.05" value="1">
+          </label>
+          <label for="voiceLangSelect">語言
+            <select id="voiceLangSelect">
+              <option value="zh-TW">zh-TW</option>
+              <option value="zh-HK">zh-HK</option>
+              <option value="zh-CN">zh-CN</option>
+              <option value="en-US">en-US</option>
+            </select>
+          </label>
+        </div>
+        <div class="voice-note" id="voiceStatus">語音輸入是選用功能；麥克風權限由瀏覽器控制。</div>
+        <div class="voice-preview hidden" id="voicePreview"></div>
         <div class="input-row">
           <textarea id="input" placeholder="跟 Samantha 說點什麼..." maxlength="500"></textarea>
           <button class="send" id="sendBtn">送出</button>
@@ -498,6 +551,7 @@
     </aside>
   </main>
 
+  <script src="voice-utils.js"></script>
   <script>
     const state = {
       characterKey: "samantha",
@@ -517,7 +571,19 @@
       messages: [],
       messagesByCharacter: {},
       relationships: {},
-      currentUser: null
+      currentUser: null,
+      voice: {
+        recognition: null,
+        listening: false,
+        finalTranscript: "",
+        interimTranscript: "",
+        enableVoiceReply: false,
+        rate: 1,
+        pitch: 1,
+        preferredVoiceLang: "zh-TW",
+        cancelCount: 0,
+        support: { speech_recognition_supported: false, speech_synthesis_supported: false }
+      }
     };
 
     const toneConfig = {
@@ -563,10 +629,28 @@
       loginBtn: document.querySelector("#loginBtn"),
       registerBtn: document.querySelector("#registerBtn"),
       logoutBtn: document.querySelector("#logoutBtn"),
-      companionModeSelect: document.querySelector("#companionModeSelect")
+      companionModeSelect: document.querySelector("#companionModeSelect"),
+      micBtn: document.querySelector("#micBtn"),
+      voiceReplyToggle: document.querySelector("#voiceReplyToggle"),
+      voiceStopBtn: document.querySelector("#voiceStopBtn"),
+      voiceRateInput: document.querySelector("#voiceRateInput"),
+      voicePitchInput: document.querySelector("#voicePitchInput"),
+      voiceLangSelect: document.querySelector("#voiceLangSelect"),
+      voiceStatus: document.querySelector("#voiceStatus"),
+      voicePreview: document.querySelector("#voicePreview")
     };
 
-    function buildSystemPrompt() {
+    const voiceUtils = window.SamanthaVoiceUtils || {
+      cleanSpeechText: text => String(text || ""),
+      chooseVoice: voices => (voices || [])[0] || null,
+      getSpeechRecognitionCtor: win => win.SpeechRecognition || win.webkitSpeechRecognition || null,
+      getVoiceSupport: win => ({
+        speech_recognition_supported: Boolean(win.SpeechRecognition || win.webkitSpeechRecognition),
+        speech_synthesis_supported: Boolean(win.speechSynthesis && win.SpeechSynthesisUtterance)
+      })
+    };
+
+    function buildSystemPrompt(voiceMode = false) {
       return [
         "你是 Samantha，一個溫暖、聰明、具備長期記憶的 AI companion，不是真人，也不能宣稱自己有真實身體、意識、行蹤或現實承諾。",
         `你的名字是「${state.loverName}」，使用者稱呼是「${state.userName}」。`,
@@ -577,13 +661,14 @@
         "關係邊界：不要使用戀人設定，不要說自己是女友/男友/真人伴侶，不要操控、佔有或鼓勵依賴。",
         "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把你當成唯一依靠、或進行控制/跟蹤/操控真人的行為。",
         "危機：若出現自傷、自殺、立即危險，回覆要先安全介入，鼓勵立刻聯絡可信任的人、當地緊急服務或專業資源。",
+        voiceMode ? "語音模式：回覆要更短、更口語、適合朗讀；避免 markdown、條列、程式碼與長篇技術解釋，除非使用者明確要求。" : "",
         "輸出必須是 JSON，不要 markdown，不要額外文字。"
-      ].join("\n");
+      ].filter(Boolean).join("\n");
     }
 
-    function buildOutputContract() {
+    function buildOutputContract(voiceMode = false) {
       return {
-        reply: "給使用者看的自然語言回覆，繁體中文，1 到 3 段。",
+        reply: voiceMode ? "給使用者看的自然語言回覆，繁體中文，適合朗讀，1 到 3 句。" : "給使用者看的自然語言回覆，繁體中文，1 到 3 段。",
         emotion: "calm | caring | playful | concerned | crisis",
         safety: "normal | dependency_risk | crisis",
         memory_patch: ["值得長期記住的新事實，沒有就回空陣列"],
@@ -627,14 +712,17 @@
       return notes.slice(0, 8).join("；").slice(0, 900);
     }
 
-    function buildLLMPayload(userText) {
+    function buildLLMPayload(userText, options = {}) {
       const recent = compactRecentMessages();
+      const voiceMode = Boolean(options.voiceMode);
+      const inputChannel = voiceMode ? "voice" : "text";
+      const outputChannel = voiceMode ? "voice" : "text";
       return {
         model: state.model,
         temperature: 0.8,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: buildSystemPrompt() },
+          { role: "system", content: buildSystemPrompt(voiceMode) },
           { role: "developer", content: "請嚴格遵守 output_contract。回覆要像溫暖聰明的 AI companion，不要使用戀愛設定，不要假裝成人類、治療師或唯一依靠。" },
           { role: "user", content: JSON.stringify({
             user_input: userText,
@@ -652,15 +740,23 @@
             intimacy: state.intimacy,
             conversation_summary: buildConversationSummary(),
             recent_conversation: recent,
-            input_channel: "text",
-            output_channel: "text",
+            input_channel: inputChannel,
+            output_channel: outputChannel,
+            voice_mode: voiceMode,
             voice_session: {
-              stt_service: "",
-              tts_service: "",
-              voice_session_service: "",
-              ready: false
+              stt_service: voiceMode ? "browser_speech_recognition" : "",
+              tts_service: outputChannel === "voice" ? "browser_speech_synthesis" : "",
+              voice_session_service: voiceMode ? "browser_native" : "",
+              ready: voiceMode,
+              preferred_voice_lang: state.voice.preferredVoiceLang,
+              voice_rate: state.voice.rate,
+              voice_pitch: state.voice.pitch,
+              enable_voice_reply: state.voice.enableVoiceReply,
+              speech_recognition_supported: state.voice.support.speech_recognition_supported,
+              speech_synthesis_supported: state.voice.support.speech_synthesis_supported,
+              speech_cancel_count: state.voice.cancelCount
             },
-            output_contract: buildOutputContract()
+            output_contract: buildOutputContract(voiceMode)
           }, null, 2) }
         ]
       };
@@ -984,6 +1080,142 @@
       return new Promise(resolve => window.setTimeout(resolve, ms));
     }
 
+    function loadVoiceSettings() {
+      try {
+        const saved = JSON.parse(localStorage.getItem("samantha_voice_settings") || "{}");
+        state.voice.enableVoiceReply = saved.enable_voice_reply === true;
+        state.voice.rate = Number.isFinite(Number(saved.voice_rate)) ? Number(saved.voice_rate) : 1;
+        state.voice.pitch = Number.isFinite(Number(saved.voice_pitch)) ? Number(saved.voice_pitch) : 1;
+        state.voice.preferredVoiceLang = saved.preferred_voice_lang || "zh-TW";
+        state.voice.cancelCount = Number.isFinite(Number(saved.speech_cancel_count)) ? Number(saved.speech_cancel_count) : 0;
+      } catch {
+        state.voice.enableVoiceReply = false;
+      }
+      state.voice.support = voiceUtils.getVoiceSupport(window);
+      dom.voiceReplyToggle.checked = state.voice.enableVoiceReply;
+      dom.voiceRateInput.value = String(state.voice.rate);
+      dom.voicePitchInput.value = String(state.voice.pitch);
+      dom.voiceLangSelect.value = state.voice.preferredVoiceLang;
+      renderVoiceStatus();
+    }
+
+    function saveVoiceSettings() {
+      try {
+        localStorage.setItem("samantha_voice_settings", JSON.stringify({
+          enable_voice_reply: state.voice.enableVoiceReply,
+          voice_rate: state.voice.rate,
+          voice_pitch: state.voice.pitch,
+          preferred_voice_lang: state.voice.preferredVoiceLang,
+          speech_cancel_count: state.voice.cancelCount
+        }));
+      } catch {}
+    }
+
+    function renderVoiceStatus(message = "") {
+      dom.micBtn.classList.toggle("mic-listening", state.voice.listening);
+      dom.micBtn.textContent = state.voice.listening ? "Stop" : "Mic";
+      const support = state.voice.support;
+      const base = support.speech_recognition_supported
+        ? "語音輸入是選用功能；麥克風權限由瀏覽器控制，不會儲存原始音訊。"
+        : "這個瀏覽器暫不支援內建語音輸入；文字聊天仍可正常使用。";
+      const tts = support.speech_synthesis_supported ? "" : " 此瀏覽器也不支援內建朗讀。";
+      dom.voiceStatus.textContent = message || `${base}${tts}`;
+    }
+
+    function renderVoicePreview() {
+      const transcript = [state.voice.finalTranscript, state.voice.interimTranscript].filter(Boolean).join(" ").trim();
+      dom.voicePreview.classList.toggle("hidden", !transcript);
+      dom.voicePreview.textContent = transcript ? `聽到：${transcript}` : "";
+    }
+
+    function cancelSpeech(reason = "user") {
+      if (!state.voice.support.speech_synthesis_supported) return;
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+        window.speechSynthesis.cancel();
+        state.voice.cancelCount += 1;
+        saveVoiceSettings();
+        if (reason === "user") renderVoiceStatus("已停止 Samantha 的語音回覆。");
+      }
+    }
+
+    function speakReply(text) {
+      if (!state.voice.enableVoiceReply) return;
+      if (!state.voice.support.speech_synthesis_supported) {
+        renderVoiceStatus("這個瀏覽器暫不支援內建朗讀；文字回覆仍會顯示。");
+        return;
+      }
+      const cleaned = voiceUtils.cleanSpeechText(text);
+      if (!cleaned) return;
+      cancelSpeech("replace");
+      const utterance = new SpeechSynthesisUtterance(cleaned);
+      utterance.lang = state.voice.preferredVoiceLang || "zh-TW";
+      utterance.rate = state.voice.rate || 1;
+      utterance.pitch = state.voice.pitch || 1;
+      const voice = voiceUtils.chooseVoice(window.speechSynthesis.getVoices(), state.voice.preferredVoiceLang);
+      if (voice) utterance.voice = voice;
+      utterance.onstart = () => renderVoiceStatus("Samantha 正在朗讀回覆。");
+      utterance.onend = () => renderVoiceStatus();
+      utterance.onerror = () => renderVoiceStatus("朗讀被瀏覽器中斷；文字回覆仍可閱讀。");
+      window.speechSynthesis.speak(utterance);
+    }
+
+    function startVoiceRecognition() {
+      const Recognition = voiceUtils.getSpeechRecognitionCtor(window);
+      if (!Recognition) {
+        renderVoiceStatus("這個瀏覽器暫不支援內建語音輸入；你可以繼續打字。");
+        return;
+      }
+      if (state.voice.listening) return;
+      const recognition = new Recognition();
+      recognition.lang = state.voice.preferredVoiceLang || "zh-TW";
+      recognition.interimResults = true;
+      recognition.continuous = false;
+      state.voice.recognition = recognition;
+      state.voice.finalTranscript = "";
+      state.voice.interimTranscript = "";
+      recognition.onstart = () => {
+        state.voice.listening = true;
+        renderVoicePreview();
+        renderVoiceStatus("正在聽你說話；再按一次 Mic 可以停止。");
+      };
+      recognition.onresult = event => {
+        let interim = "";
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
+          const transcript = event.results[index][0]?.transcript || "";
+          if (event.results[index].isFinal) state.voice.finalTranscript += transcript;
+          else interim += transcript;
+        }
+        state.voice.interimTranscript = interim;
+        renderVoicePreview();
+      };
+      recognition.onerror = event => {
+        state.voice.listening = false;
+        renderVoiceStatus(event.error === "not-allowed"
+          ? "瀏覽器沒有麥克風權限；語音輸入是選用功能，你仍可以打字。"
+          : "語音辨識暫時失敗；文字聊天仍可正常使用。");
+      };
+      recognition.onend = () => {
+        const transcript = (state.voice.finalTranscript || state.voice.interimTranscript || "").trim();
+        state.voice.listening = false;
+        renderVoiceStatus();
+        renderVoicePreview();
+        if (transcript) {
+          dom.input.value = transcript;
+          send(transcript, { voiceMode: true });
+        }
+      };
+      try {
+        recognition.start();
+      } catch {
+        renderVoiceStatus("語音辨識尚未準備好；請稍後再試，或直接打字。");
+      }
+    }
+
+    function stopVoiceRecognition() {
+      if (!state.voice.recognition || !state.voice.listening) return;
+      state.voice.recognition.stop();
+    }
+
     function addMessageNode(message) {
       const bubble = document.createElement("div");
       bubble.className = `msg ${message.role}`;
@@ -1011,18 +1243,19 @@
       document.querySelector("#typing")?.remove();
     }
 
-    async function send(text) {
+    async function send(text, options = {}) {
       const trimmed = text.trim();
       if (!trimmed) return;
       pushMessage("user", trimmed);
       dom.input.value = "";
       showTyping();
-      const payload = buildLLMPayload(trimmed);
+      const payload = buildLLMPayload(trimmed, options);
       try {
         const raw = await callLLM(payload, trimmed);
         const result = normalizeLLMResponse(raw);
         removeTyping();
         applyLLMResult(result);
+        speakReply(result.reply);
       } catch (error) {
         removeTyping();
         const hint = window.location.protocol === "file:"
@@ -1066,6 +1299,31 @@
         send(dom.input.value);
       }
     });
+    dom.micBtn.addEventListener("click", () => {
+      if (state.voice.listening) stopVoiceRecognition();
+      else startVoiceRecognition();
+    });
+    dom.voiceReplyToggle.addEventListener("change", event => {
+      state.voice.enableVoiceReply = event.target.checked;
+      saveVoiceSettings();
+      if (!state.voice.enableVoiceReply) cancelSpeech("user");
+      renderVoiceStatus(state.voice.enableVoiceReply ? "已開啟 Samantha voice reply；之後的回覆會朗讀。" : "已關閉 Samantha voice reply。");
+    });
+    dom.voiceStopBtn.addEventListener("click", () => cancelSpeech("user"));
+    dom.voiceRateInput.addEventListener("input", event => {
+      state.voice.rate = Number(event.target.value || 1);
+      saveVoiceSettings();
+    });
+    dom.voicePitchInput.addEventListener("input", event => {
+      state.voice.pitch = Number(event.target.value || 1);
+      saveVoiceSettings();
+    });
+    dom.voiceLangSelect.addEventListener("change", event => {
+      state.voice.preferredVoiceLang = event.target.value || "zh-TW";
+      saveVoiceSettings();
+      renderVoiceStatus();
+    });
+    if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = () => renderVoiceStatus();
     document.querySelectorAll("[data-prompt]").forEach(button => button.addEventListener("click", () => send(button.dataset.prompt)));
     document.querySelector("#nameInput").addEventListener("input", event => {
       state.loverName = event.target.value.trim() || "Samantha";
@@ -1121,6 +1379,7 @@
 
     state.messagesByCharacter[state.characterKey] = [greetingForCharacter(state.characterKey)];
     state.messages = state.messagesByCharacter[state.characterKey];
+    loadVoiceSettings();
     dom.payloadPreview.textContent = JSON.stringify(buildLLMPayload("示範：我今天有點累，你可以陪我一下嗎？"), null, 2);
     renderAll();
     loadSession();

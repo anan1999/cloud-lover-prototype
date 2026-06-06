@@ -724,7 +724,7 @@ Expected Samantha:
 5. Samantha 有時仍會太像分類器、問卷或安慰模板。
 6. 記憶回叫需要繼續提升，尤其是短句、多輪、碎片聊天。
 7. 情緒分析目前主要是規則式，不是真正理解情緒。
-8. 語音尚未正式實作，目前只是 schema voice-ready。
+8. 語音目前是 Voice-lite：使用瀏覽器 SpeechRecognition/speechSynthesis，不存原始音訊，也尚未做到即時串流語音。
 9. 尚未加入背景主動通知。
 10. Token 成本與 rate limit 還需要更精細的預算控制。
 
