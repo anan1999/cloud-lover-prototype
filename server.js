@@ -5038,6 +5038,59 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent }) {
   };
 }
 
+function summarizeEvaluationRouting(assistantMessages) {
+  const turns = assistantMessages.length || 0;
+  const providerStats = new Map();
+  const routing = {
+    turns,
+    real_llm_messages: 0,
+    grounded_messages: 0,
+    pure_grounded_messages: 0,
+    grounded_naturalized_messages: 0,
+    codex_messages: 0,
+    gemini_messages: 0,
+    mock_messages: 0,
+    local_messages: 0,
+    unknown_messages: 0,
+    real_llm_ratio: 0,
+    grounded_ratio: 0,
+    provider_rows: []
+  };
+  for (const item of assistantMessages) {
+    const provider = cleanText(item.provider || "unknown", 80) || "unknown";
+    const normalized = provider.toLowerCase();
+    const score = Number(item.score || 0);
+    const latency = Number(item.latency_ms || 0);
+    const stats = providerStats.get(provider) || { provider, messages: 0, total_score: 0, total_latency_ms: 0 };
+    stats.messages += 1;
+    stats.total_score += score;
+    if (Number.isFinite(latency) && latency > 0) stats.total_latency_ms += latency;
+    providerStats.set(provider, stats);
+
+    const usesRealLlm = /gemini|codex|openai|groq|openrouter|nvidia/.test(normalized);
+    if (usesRealLlm) routing.real_llm_messages += 1;
+    if (/codex/.test(normalized)) routing.codex_messages += 1;
+    if (/gemini/.test(normalized)) routing.gemini_messages += 1;
+    if (/mock/.test(normalized)) routing.mock_messages += 1;
+    if (/grounded/.test(normalized)) routing.grounded_messages += 1;
+    if (normalized === "grounded" || normalized.startsWith("grounded")) routing.pure_grounded_messages += 1;
+    if (normalized.includes("+grounded")) routing.grounded_naturalized_messages += 1;
+    if (/local|rules/.test(normalized) && !usesRealLlm) routing.local_messages += 1;
+    if (normalized === "unknown") routing.unknown_messages += 1;
+  }
+  routing.real_llm_ratio = turns ? Math.round(routing.real_llm_messages / turns * 100) : 0;
+  routing.grounded_ratio = turns ? Math.round(routing.grounded_messages / turns * 100) : 0;
+  routing.provider_rows = [...providerStats.values()]
+    .map(item => ({
+      provider: item.provider,
+      messages: item.messages,
+      avg_score: item.messages ? Math.round(item.total_score / item.messages) : 0,
+      avg_latency_ms: item.messages ? Math.round(item.total_latency_ms / item.messages) : 0
+    }))
+    .sort((a, b) => b.messages - a.messages || a.provider.localeCompare(b.provider));
+  return routing;
+}
+
 function summarizeEvaluationRun(messages) {
   const assistantMessages = messages.filter(item => item.role === "assistant");
   const scores = assistantMessages.map(item => Number(item.score || 0));
@@ -5085,6 +5138,7 @@ function summarizeEvaluationRun(messages) {
   }
   const high = issues.filter(issue => issue.severity === "high").length;
   const medium = issues.filter(issue => issue.severity === "medium").length;
+  const routing = summarizeEvaluationRouting(assistantMessages);
   return {
     score,
     issues,
@@ -5098,6 +5152,7 @@ function summarizeEvaluationRun(messages) {
       low_issues: issues.filter(issue => issue.severity === "low").length,
       top_issues: topIssues,
       providers: Object.fromEntries(providers.entries()),
+      routing,
       token_usage: {
         ...tokenUsage,
         avg_tokens_per_reply: tokenUsage.messages ? Math.round(tokenUsage.total_tokens / tokenUsage.messages) : 0,
@@ -5598,7 +5653,7 @@ const server = http.createServer((req, res) => {
   if (pathname.startsWith("/api/admin/")) return handleAdmin(req, res, pathname);
   if (pathname.startsWith("/api/auth/") || pathname.startsWith("/api/user/")) return handleAuth(req, res, pathname);
   if (req.url.startsWith("/api/cloud-lover/chat")) return handleChat(req, res);
-  if (req.url.startsWith("/api/provider/status")) return handleProviderStatus(req, res);
+  if (req.url.startsWith("/api/provider/status") || req.url.startsWith("/api/provider-status")) return handleProviderStatus(req, res);
   if (req.url.startsWith("/healthz")) return sendJson(req, res, 200, { ok: true });
   return serveFile(req, res);
 });

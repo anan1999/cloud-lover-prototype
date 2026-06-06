@@ -84,6 +84,17 @@
       border-radius: 8px;
       background: rgba(255,255,255,.04);
     }
+    .eval-panel {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,.035);
+      align-content: start;
+    }
+    .eval-panel h2 { margin: 0; }
+    .issue-hotspots { display: flex; flex-wrap: wrap; gap: 8px; }
     .bars { display: grid; gap: 9px; }
     .bar-row { display: grid; grid-template-columns: 92px 1fr 44px; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
     .bar { height: 9px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
@@ -225,6 +236,16 @@
           <button class="ghost" id="runLlmBtn">跑 LLM 測試官</button>
         </div>
         <div class="grid three" id="evalMetrics" style="margin-top:14px;"></div>
+        <div class="grid two" style="margin-top:14px;">
+          <div class="eval-panel">
+            <h2>路由健康</h2>
+            <div class="bars" id="evalProviderBars"></div>
+          </div>
+          <div class="eval-panel">
+            <h2>問題熱點</h2>
+            <div class="issue-hotspots" id="evalIssueHotspots"></div>
+          </div>
+        </div>
         <div class="bars" id="evalTrend" style="margin-top:14px;"></div>
       </section>
 
@@ -497,7 +518,39 @@
     function issuePills(issues) {
       const list = Array.isArray(issues) ? issues : [];
       if (!list.length) return `<span class="pill good">無明顯問題</span>`;
-      return `<span class="issue-list">${list.slice(0, 4).map(issue => `<span class="pill ${issue.severity === "high" ? "danger" : ""}">${escapeHtml(issue.code || issue)}</span>`).join("")}</span>`;
+      return `<span class="issue-list">${list.slice(0, 4).map(issue => {
+        const code = issue.code || issue;
+        const detail = issue.detail || issue.message || code;
+        return `<span class="pill ${issue.severity === "high" ? "danger" : ""}" title="${escapeHtml(detail)}">${escapeHtml(code)}</span>`;
+      }).join("")}</span>`;
+    }
+
+    function renderEvaluationProviderBars(metrics) {
+      const routing = metrics?.routing || {};
+      const rows = Array.isArray(routing.provider_rows) ? routing.provider_rows : Object.entries(metrics?.providers || {}).map(([provider, messages]) => ({ provider, messages }));
+      const max = Math.max(1, ...rows.map(row => Number(row.messages || 0)));
+      $("#evalProviderBars").innerHTML = rows.length ? rows.map(row => {
+        const count = Number(row.messages || 0);
+        const score = Number(row.avg_score || 0);
+        const latency = Number(row.avg_latency_ms || 0);
+        const hint = score ? `平均 ${score} 分${latency ? ` · ${num(latency)}ms` : ""}` : `${num(count)} 則`;
+        return `
+          <div class="bar-row">
+            <span>${escapeHtml(row.provider || "unknown")}</span>
+            <div class="bar"><span style="width:${Math.max(4, count / max * 100)}%"></span></div>
+            <strong>${num(count)}<small>${escapeHtml(hint)}</small></strong>
+          </div>
+        `;
+      }).join("") : `<p class="muted">還沒有 provider 路由資料。</p>`;
+    }
+
+    function renderEvaluationHotspots(metrics) {
+      const issues = Array.isArray(metrics?.top_issues) ? metrics.top_issues : [];
+      $("#evalIssueHotspots").innerHTML = issues.length ? issues.map(item => `
+        <span class="pill ${Number(item.count || 0) >= 3 ? "warn" : ""}">
+          ${escapeHtml(item.code || "unknown")} · ${num(item.count)}
+        </span>
+      `).join("") : `<span class="pill good">目前沒有集中問題</span>`;
     }
 
     function renderEvaluationDashboard(data) {
@@ -531,6 +584,13 @@
         metrics.push(["測試 Tokens", num(latest.metrics.token_usage.total_tokens)]);
         metrics.push(["測試 API Tokens", num(latest.metrics.token_usage.billable_tokens)]);
       }
+      if (latest?.metrics?.routing) {
+        const routing = latest.metrics.routing;
+        metrics.push(["真實 LLM", `${num(routing.real_llm_messages)} / ${num(routing.turns)}<small>${num(routing.real_llm_ratio)}%</small>`]);
+        metrics.push(["Grounded", `${num(routing.grounded_messages)} / ${num(routing.turns)}<small>${num(routing.grounded_ratio)}%</small>`]);
+        metrics.push(["Codex", num(routing.codex_messages)]);
+        metrics.push(["Gemini", num(routing.gemini_messages)]);
+      }
       if (latest?.metrics?.companion_quality) {
         const q = latest.metrics.companion_quality;
         metrics.push(["Continuity", `<span class="score ${scoreClass(q.continuity_score || 0)}">${Number(q.continuity_score || 0)}</span>`]);
@@ -541,6 +601,8 @@
         metrics.push(["Rhythm", `<span class="score ${scoreClass(q.rhythm_score || 0)}">${Number(q.rhythm_score || 0)}</span>`]);
       }
       $("#evalMetrics").innerHTML = metrics.map(([label, value]) => `<div class="metric eval-metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
+      renderEvaluationProviderBars(latest?.metrics || {});
+      renderEvaluationHotspots(latest?.metrics || {});
       const trend = data.score_trend || [];
       $("#evalTrend").innerHTML = trend.length ? trend.map(item => `
         <div class="bar-row">
