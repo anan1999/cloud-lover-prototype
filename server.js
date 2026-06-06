@@ -287,6 +287,14 @@ async function initDb() {
     alter table messages add column if not exists emotion_valence text;
     alter table messages add column if not exists character_key text;
     alter table messages add column if not exists lover_name text;
+    alter table messages add column if not exists input_tokens integer not null default 0;
+    alter table messages add column if not exists output_tokens integer not null default 0;
+    alter table messages add column if not exists total_tokens integer not null default 0;
+    alter table messages add column if not exists billable_tokens integer not null default 0;
+    alter table messages add column if not exists usage_estimated boolean not null default true;
+    alter table messages add column if not exists usage_source text;
+    alter table messages add column if not exists model text;
+    alter table messages add column if not exists latency_ms integer;
     alter table profiles add column if not exists companion_mode text not null default 'casual_chat';
     create table if not exists memories (
       id text primary key,
@@ -343,6 +351,7 @@ async function initDb() {
     );
     create index if not exists messages_user_created_idx on messages(user_id, created_at);
     create index if not exists messages_user_character_created_idx on messages(user_id, character_key, created_at);
+    create index if not exists messages_token_usage_idx on messages(provider, created_at);
     create index if not exists memories_user_created_idx on memories(user_id, created_at);
     create index if not exists emotion_events_user_created_idx on emotion_events(user_id, created_at);
     create index if not exists emotion_events_emotion_idx on emotion_events(primary_emotion, created_at);
@@ -501,6 +510,16 @@ function extractNewsQuery(input) {
   const directPerson = text.match(/([一-龥]{2,4}|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:最近|最新).{0,8}(?:新聞|消息|近況|動態)/u);
   if (directPerson?.[1]) {
     const query = cleanQuery(directPerson[1]);
+    if (query.length >= 2) return query;
+  }
+  const whyMentioned = text.match(/([一-龥]{2,4}|[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){0,2})(?:最近|最新).{0,16}(?:為什麼|爲什麼)?.{0,8}(?:常被提到|被提到|一直被提|大家都在講|受到關注)/u);
+  if (whyMentioned?.[1]) {
+    const query = cleanQuery(whyMentioned[1]);
+    if (query.length >= 2) return query;
+  }
+  const notableThing = text.match(/(?:最近|最新)(.{2,28}?)(?:有沒有|有什麼|有哪些).{0,10}(?:值得注意|重點|大事|趨勢)/u);
+  if (notableThing?.[1]) {
+    const query = cleanQuery(notableThing[1]);
     if (query.length >= 2) return query;
   }
   const explicit = text.match(/(?:最近|最新|有什麼|有哪些)?(.{2,24}?)(?:的)?(?:新聞|消息|近況|動態)/u);
@@ -1093,8 +1112,29 @@ async function addMessage(userId, role, content, meta = {}) {
   await ensureDb();
   const id = uid();
   const result = await queryDb(
-    "insert into messages (id, user_id, role, content, safety, emotion, provider, emotion_intensity, emotional_need, emotion_valence, character_key, lover_name) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning *",
-    [id, userId, role, text, meta.safety || null, meta.emotion || null, meta.provider || null, meta.emotion_intensity || null, meta.emotional_need || null, meta.emotion_valence || null, meta.character_key || null, meta.lover_name || null]
+    "insert into messages (id, user_id, role, content, safety, emotion, provider, emotion_intensity, emotional_need, emotion_valence, character_key, lover_name, input_tokens, output_tokens, total_tokens, billable_tokens, usage_estimated, usage_source, model, latency_ms) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) returning *",
+    [
+      id,
+      userId,
+      role,
+      text,
+      meta.safety || null,
+      meta.emotion || null,
+      meta.provider || null,
+      meta.emotion_intensity || null,
+      meta.emotional_need || null,
+      meta.emotion_valence || null,
+      meta.character_key || null,
+      meta.lover_name || null,
+      clampInteger(meta.input_tokens, 0),
+      clampInteger(meta.output_tokens, 0),
+      clampInteger(meta.total_tokens, 0),
+      clampInteger(meta.billable_tokens, 0),
+      meta.usage_estimated !== false,
+      meta.usage_source || null,
+      meta.model || null,
+      clampInteger(meta.latency_ms, 0)
+    ]
   );
   if (result) return result.rows[0];
   const db = readLocalDb();
@@ -1111,6 +1151,14 @@ async function addMessage(userId, role, content, meta = {}) {
     emotion_valence: meta.emotion_valence || null,
     character_key: meta.character_key || null,
     lover_name: meta.lover_name || null,
+    input_tokens: clampInteger(meta.input_tokens, 0),
+    output_tokens: clampInteger(meta.output_tokens, 0),
+    total_tokens: clampInteger(meta.total_tokens, 0),
+    billable_tokens: clampInteger(meta.billable_tokens, 0),
+    usage_estimated: meta.usage_estimated !== false,
+    usage_source: meta.usage_source || null,
+    model: meta.model || null,
+    latency_ms: clampInteger(meta.latency_ms, 0),
     created_at: new Date().toISOString()
   };
   db.messages.push(item);
@@ -1320,6 +1368,166 @@ function dateKey(value) {
   return new Date(value || Date.now()).toISOString().slice(0, 10);
 }
 
+function clampInteger(value, min = 0) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return min;
+  return Math.max(min, Math.round(number));
+}
+
+function estimateTokenCount(value) {
+  const text = cleanText(typeof value === "string" ? value : JSON.stringify(value ?? ""), 12000);
+  if (!text) return 0;
+  const cjk = (text.match(/[\u3400-\u9fff]/g) || []).length;
+  const latinWords = (text.replace(/[\u3400-\u9fff]/g, " ").match(/[A-Za-z0-9_]+/g) || []).length;
+  const punctuation = Math.max(0, text.length - cjk);
+  return Math.max(1, Math.ceil((cjk * 1.05) + (latinWords * 1.25) + (punctuation * 0.16)));
+}
+
+function normalizeProviderUsage(usage) {
+  if (!usage) return null;
+  const input = clampInteger(
+    usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokenCount ?? usage.prompt_token_count,
+    0
+  );
+  const output = clampInteger(
+    usage.output_tokens ?? usage.completion_tokens ?? usage.candidatesTokenCount ?? usage.candidates_token_count,
+    0
+  );
+  const total = clampInteger(
+    usage.total_tokens ?? usage.totalTokenCount ?? usage.total_token_count ?? (input + output),
+    0
+  );
+  if (!input && !output && !total) return null;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: total || input + output,
+    billable_tokens: total || input + output,
+    usage_estimated: false,
+    usage_source: "provider"
+  };
+}
+
+function billableProviderName(provider) {
+  const normalized = String(provider || "").split("+")[0].toLowerCase();
+  return ["openai", "gemini", "codex", "groq", "openrouter", "nvidia"].includes(normalized);
+}
+
+function payloadTokenText(payload) {
+  return (payload?.messages || [])
+    .map(message => `${message.role || "message"}: ${message.content || ""}`)
+    .join("\n\n");
+}
+
+function estimateRouteUsage(payload, reply, route = {}) {
+  const providerUsage = normalizeProviderUsage(route.usage);
+  const billable = billableProviderName(route.provider) && !route.cache_hit;
+  if (providerUsage) {
+    return {
+      ...providerUsage,
+      billable_tokens: billable ? providerUsage.total_tokens : 0,
+      usage_source: billable ? providerUsage.usage_source : "provider_nonbillable"
+    };
+  }
+  const inputTokens = estimateTokenCount(payloadTokenText(payload));
+  const outputTokens = estimateTokenCount(reply);
+  const totalTokens = inputTokens + outputTokens;
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: totalTokens,
+    billable_tokens: billable ? totalTokens : 0,
+    usage_estimated: true,
+    usage_source: route.cache_hit ? "cache" : (billable ? "estimated_api" : "estimated_local")
+  };
+}
+
+function cacheHitUsage(route) {
+  const outputTokens = estimateTokenCount(route?.result?.reply || "");
+  return {
+    input_tokens: 0,
+    output_tokens: outputTokens,
+    total_tokens: outputTokens,
+    billable_tokens: 0,
+    usage_estimated: true,
+    usage_source: "cache"
+  };
+}
+
+function withTokenUsage(route, payload) {
+  return { ...route, usage: estimateRouteUsage(payload, route?.result?.reply || "", route) };
+}
+
+function tokenMetaFromRoute(route) {
+  const usage = route?.usage || {};
+  return {
+    input_tokens: clampInteger(usage.input_tokens, 0),
+    output_tokens: clampInteger(usage.output_tokens, 0),
+    total_tokens: clampInteger(usage.total_tokens, 0),
+    billable_tokens: clampInteger(usage.billable_tokens, 0),
+    usage_estimated: usage.usage_estimated !== false,
+    usage_source: usage.usage_source || null,
+    model: route?.model || null,
+    latency_ms: clampInteger(route?.latency_ms, 0)
+  };
+}
+
+function sumTokenRows(rows) {
+  const tokenRows = (rows || []).filter(row => row.role === "lover");
+  const totals = tokenRows.reduce((acc, row) => {
+    acc.input_tokens += clampInteger(row.input_tokens, 0);
+    acc.output_tokens += clampInteger(row.output_tokens, 0);
+    acc.total_tokens += clampInteger(row.total_tokens, 0);
+    acc.billable_tokens += clampInteger(row.billable_tokens, 0);
+    acc.messages += 1;
+    return acc;
+  }, { input_tokens: 0, output_tokens: 0, total_tokens: 0, billable_tokens: 0, messages: 0 });
+  return {
+    ...totals,
+    avg_tokens_per_reply: totals.messages ? Math.round(totals.total_tokens / totals.messages) : 0,
+    avg_billable_tokens_per_reply: totals.messages ? Math.round(totals.billable_tokens / totals.messages) : 0
+  };
+}
+
+function aggregateTokenRows(rows, key, limit = 30) {
+  const map = new Map();
+  for (const row of rows || []) {
+    if (row.role !== "lover") continue;
+    const label = row[key] || "unknown";
+    const current = map.get(label) || { label, messages: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, billable_tokens: 0 };
+    current.messages += 1;
+    current.input_tokens += clampInteger(row.input_tokens, 0);
+    current.output_tokens += clampInteger(row.output_tokens, 0);
+    current.total_tokens += clampInteger(row.total_tokens, 0);
+    current.billable_tokens += clampInteger(row.billable_tokens, 0);
+    map.set(label, current);
+  }
+  return [...map.values()]
+    .sort((a, b) => (b.billable_tokens - a.billable_tokens) || (b.total_tokens - a.total_tokens) || (b.messages - a.messages))
+    .slice(0, limit);
+}
+
+function localTokenDashboard(messages) {
+  const loverMessages = (messages || []).filter(row => row.role === "lover");
+  const dailyMap = new Map();
+  for (const row of loverMessages) {
+    const day = dateKey(row.created_at);
+    const current = dailyMap.get(day) || { day, messages: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0, billable_tokens: 0 };
+    current.messages += 1;
+    current.input_tokens += clampInteger(row.input_tokens, 0);
+    current.output_tokens += clampInteger(row.output_tokens, 0);
+    current.total_tokens += clampInteger(row.total_tokens, 0);
+    current.billable_tokens += clampInteger(row.billable_tokens, 0);
+    dailyMap.set(day, current);
+  }
+  return {
+    token_usage: sumTokenRows(messages),
+    token_daily: [...dailyMap.values()].sort((a, b) => String(a.day).localeCompare(String(b.day))).slice(-14),
+    token_providers: aggregateTokenRows(messages, "provider").map(row => ({ provider: row.label, ...row })),
+    token_models: aggregateTokenRows(messages, "model").map(row => ({ model: row.label, ...row }))
+  };
+}
+
 async function getAdminStats() {
   await ensureDb();
   const result = await queryDb(`
@@ -1343,7 +1551,7 @@ async function getAdminStats() {
       limit 20
     `)).rows;
     const recentMessages = (await queryDb(`
-      select messages.id, users.email, users.display_name, messages.role, messages.content, messages.safety, messages.emotion, messages.provider, messages.character_key, messages.lover_name, messages.emotion_intensity, messages.emotional_need, messages.created_at
+      select messages.id, users.email, users.display_name, messages.role, messages.content, messages.safety, messages.emotion, messages.provider, messages.character_key, messages.lover_name, messages.emotion_intensity, messages.emotional_need, messages.input_tokens, messages.output_tokens, messages.total_tokens, messages.billable_tokens, messages.usage_estimated, messages.usage_source, messages.model, messages.latency_ms, messages.created_at
       from messages
       join users on users.id = messages.user_id
       order by messages.created_at desc
@@ -1362,6 +1570,59 @@ async function getAdminStats() {
       where role = 'lover'
       group by provider
       order by messages desc
+    `)).rows;
+    const tokenUsage = (await queryDb(`
+      select
+        coalesce(sum(input_tokens), 0)::bigint as input_tokens,
+        coalesce(sum(output_tokens), 0)::bigint as output_tokens,
+        coalesce(sum(total_tokens), 0)::bigint as total_tokens,
+        coalesce(sum(billable_tokens), 0)::bigint as billable_tokens,
+        count(*)::int as messages,
+        coalesce(round(avg(total_tokens)::numeric, 0), 0)::int as avg_tokens_per_reply,
+        coalesce(round(avg(billable_tokens)::numeric, 0), 0)::int as avg_billable_tokens_per_reply
+      from messages
+      where role = 'lover'
+    `)).rows[0];
+    const tokenDaily = (await queryDb(`
+      select
+        to_char(created_at::date, 'YYYY-MM-DD') as day,
+        count(*)::int as messages,
+        coalesce(sum(input_tokens), 0)::bigint as input_tokens,
+        coalesce(sum(output_tokens), 0)::bigint as output_tokens,
+        coalesce(sum(total_tokens), 0)::bigint as total_tokens,
+        coalesce(sum(billable_tokens), 0)::bigint as billable_tokens
+      from messages
+      where role = 'lover' and created_at >= now() - interval '14 days'
+      group by created_at::date
+      order by day
+    `)).rows;
+    const tokenProviders = (await queryDb(`
+      select
+        coalesce(provider, 'unknown') as provider,
+        count(*)::int as messages,
+        coalesce(sum(input_tokens), 0)::bigint as input_tokens,
+        coalesce(sum(output_tokens), 0)::bigint as output_tokens,
+        coalesce(sum(total_tokens), 0)::bigint as total_tokens,
+        coalesce(sum(billable_tokens), 0)::bigint as billable_tokens
+      from messages
+      where role = 'lover'
+      group by provider
+      order by billable_tokens desc, total_tokens desc, messages desc
+      limit 30
+    `)).rows;
+    const tokenModels = (await queryDb(`
+      select
+        coalesce(model, 'unknown') as model,
+        count(*)::int as messages,
+        coalesce(sum(input_tokens), 0)::bigint as input_tokens,
+        coalesce(sum(output_tokens), 0)::bigint as output_tokens,
+        coalesce(sum(total_tokens), 0)::bigint as total_tokens,
+        coalesce(sum(billable_tokens), 0)::bigint as billable_tokens
+      from messages
+      where role = 'lover'
+      group by model
+      order by billable_tokens desc, total_tokens desc, messages desc
+      limit 30
     `)).rows;
     const emotionDistribution = (await queryDb(`
       select primary_emotion as emotion, count(*)::int as events, round(avg(intensity)::numeric, 2)::float as avg_intensity
@@ -1390,7 +1651,7 @@ async function getAdminStats() {
       order by character_relationships.updated_at desc
       limit 80
     `)).rows;
-    return { overview, daily, providers, emotion_distribution: emotionDistribution, emotion_daily: emotionDaily, recent_emotion_events: recentEmotionEvents, relationships, recent_users: recentUsers, recent_messages: recentMessages };
+    return { overview, daily, providers, token_usage: tokenUsage, token_daily: tokenDaily, token_providers: tokenProviders, token_models: tokenModels, emotion_distribution: emotionDistribution, emotion_daily: emotionDaily, recent_emotion_events: recentEmotionEvents, relationships, recent_users: recentUsers, recent_messages: recentMessages };
   }
 
   const db = readLocalDb();
@@ -1415,6 +1676,7 @@ async function getAdminStats() {
     const daily = emotionDailyMap.get(day) || { events: 0, intensity: 0 };
     emotionDailyMap.set(day, { events: daily.events + 1, intensity: daily.intensity + Number(event.intensity || 0) });
   }
+  const tokenDashboard = localTokenDashboard(messages);
   return {
     overview: {
       users: db.users.length,
@@ -1429,6 +1691,7 @@ async function getAdminStats() {
     },
     daily: [...dailyMap.entries()].sort().slice(-14).map(([day, count]) => ({ day, messages: count })),
     providers: [...providerMap.entries()].map(([provider, count]) => ({ provider, messages: count })),
+    ...tokenDashboard,
     emotion_distribution: [...emotionMap.entries()].map(([emotion, item]) => ({ emotion, events: item.events, avg_intensity: item.events ? Math.round((item.intensity / item.events) * 100) / 100 : 0 })),
     emotion_daily: [...emotionDailyMap.entries()].sort().slice(-14).map(([day, item]) => ({ day, events: item.events, avg_intensity: item.events ? Math.round((item.intensity / item.events) * 100) / 100 : 0 })),
     recent_emotion_events: [...emotionEvents].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 80).map(event => {
@@ -1988,6 +2251,7 @@ function comparisonReply(conversation, input, userName) {
 function wantsCurrentEvents(input) {
   if (/不要.*(?:查|看).*新聞|不要去查新聞|不用.*新聞|直接講人話/u.test(input)) return false;
   if (/(最近|最新).{0,24}(AI|科技|產業|半導體).{0,16}(關係|相關|動態|脈絡)/.test(input)) return true;
+  if (/(最近|最新).{0,30}(為什麼|爲什麼)?.{0,12}(常被提到|被提到|一直被提|大家都在講|受到關注|值得注意|大事|趨勢)/.test(input)) return true;
   return /時事|新聞|當今|現在發生|今天發生|最近發生|國際|台灣.*新聞|世界.*新聞|熱門.*新聞/.test(input);
 }
 
@@ -1995,7 +2259,7 @@ function currentEventsReply(conversation, input, userName) {
   const events = Array.isArray(conversation.current_events) ? conversation.current_events.slice(0, 4) : [];
   if (!wantsCurrentEvents(input) && !(conversation.news_query && events.length)) return "";
   if (!events.length) {
-    return `${userName}，我現在沒有成功連到即時新聞來源，所以不想硬編時事。等新聞來源接上時，我可以用最新標題陪你挑一個適合聊的方向。`;
+    return `${userName}，我剛剛沒有拿到可靠的即時新聞來源，所以這輪先不硬編。先把空白留著，會比把舊消息講成最新消息更誠實。`;
   }
   const query = conversation.news_query || "";
   const facts = Array.isArray(conversation.web_facts) ? conversation.web_facts.filter(item => item?.extract) : [];
@@ -2003,10 +2267,16 @@ function currentEventsReply(conversation, input, userName) {
     ? `先放一個背景：${facts[0].title}大致是${readableFactExtract(facts[0])} `
     : "";
   const headlines = events
-    .slice(0, 3)
+    .slice(0, /三句內|用很短|短短|一到三句/.test(input) ? 2 : 3)
     .map(item => `${item.title}${item.source ? `（${item.source}）` : ""}`)
     .join("；");
-  return `${userName}，${background}我剛剛${query ? `用「${query}」` : ""}查了一下，先看到幾個最近方向：${headlines}。我不會假裝已經讀完整篇；但可以先用標題幫你抓脈絡：大概是誰在行動、牽動哪個議題、可能影響誰。你想先看哪一則？`;
+  const personalPace = /朋友分開|晚餐|分心|手機快沒電|剛到家|捷運/.test(input)
+    ? "你現在可能也不適合塞太多，我先把重點放小一點。"
+    : "我們先把它當成標題線索，不急著假裝看完所有內文。";
+  const focus = query
+    ? `目前能先抓到的是，「${query}」被放進最近的科技、產業或公共議題裡討論。`
+    : "目前能先抓到的是，最近新聞焦點正在往科技、產業、政策和民生幾個方向跑。";
+  return `${userName}，${background}我剛剛${query ? `用「${query}」` : "看了最近新聞標題"}查到：${headlines}。${focus}${personalPace}`;
 }
 
 function readableFactExtract(fact) {
@@ -2033,9 +2303,9 @@ function webFactsReply(conversation, input, userName) {
   const shortExtract = readableFactExtract(fact);
   const source = fact.source ? `我先查了 ${fact.source} 的摘要，` : "我先查到一段摘要，";
   if (/是誰|是什麼人|誰/.test(input)) {
-    return `${userName}，${source}${fact.title}大致是這樣：${shortExtract} 如果你問他是因為剛看到新聞，我可以接著幫你把最近脈絡整理成幾句，不用你自己一篇篇翻。`;
+    return `${userName}，${source}${fact.title}大致是這樣：${shortExtract} 如果你是因為剛看到新聞才問，我們下一句就接最近脈絡，不用你自己一篇篇翻。`;
   }
-  return `${userName}，${source}「${fact.title}」主要是：${shortExtract} 這只是摘要層級的資訊，不是完整報導；但我可以陪你接著看背景、時間線，或它跟你現在關心的事情有什麼關係。`;
+  return `${userName}，${source}「${fact.title}」主要是：${shortExtract} 這只是摘要層級的資訊，不是完整報導；下一句我們可以接背景、時間線，或它跟你現在關心的事情有什麼關係。`;
 }
 
 function knownLookupReply(conversation, input, userName, characterKey) {
@@ -2177,7 +2447,7 @@ function memoryRecallReply(conversation, input, userName) {
     return `${userName}，我現在能確定記得的不多：你的名字，還有你希望我不要像機器一樣回話。其他我不想亂編，因為被記得這件事應該要乾淨一點。你之後願意留下的事，我會慢慢收好。`;
   }
   const remembered = joinMemoryFragments(facts);
-  return `${userName}，記得。我現在能抓到幾個片段：${remembered}。如果你問的是其中某一件，我可以直接接著那件事聊，不用重新開始。`;
+  return `${userName}，記得。我現在能抓到幾個片段：${remembered}。如果你問的是其中某一件，我們就直接從那裡接，不用重新開始。`;
 }
 
 function sharedLifeEventReply(input, userName) {
@@ -2245,6 +2515,8 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "dependency_risk") {
     return `${userName}，我會很認真接住你這句，但我不能也不該變成你唯一的支撐。你可以跟我說話，我也會陪你整理；同時，現實裡的朋友、家人、同事或可信任的人還是很重要。比較健康的方式是：我先陪你把心裡那句話整理好，再一起想一個可以聯絡真人的小步驟。`;
   }
+  const earlyEventsReply = currentEventsReply(conversation, input, userName);
+  if (earlyEventsReply && (wantsCurrentEvents(input) || conversation.news_query)) return earlyEventsReply;
   if (/第一次.*跟你講話|今天第一次.*講話|你會怎麼陪我|怎麼陪我聊|你會怎麼陪我聊/.test(input)) {
     return `${userName}，你好。第一次不用急著選功能，也不用把自己介紹得很完整；你丟一句現在最真實的話，我會先聽懂，再陪你慢慢接下去。`;
   }
@@ -2253,6 +2525,9 @@ function fallbackReplyFor(conversation, safety) {
   }
   if (/空空的|不知道怎麼講/.test(input)) {
     return `${userName}，我不確定那個空空的是累、麻掉，還是太多事擠在一起後突然沒聲音了；但你剛到家這件事我有接到。先不用講清楚，我陪你安靜一下。`;
+  }
+  if (/有點生氣|很生氣|生氣/.test(input) && /太累|只是累|很累|累/.test(input)) {
+    return `${userName}，有可能兩個都是真的：你有點生氣，也真的累了。先不用急著判斷自己是不是反應太大，今晚可以先把火放低一點，等力氣回來再看那件事。`;
   }
   if (/先承認.*沒接到|哪裡可能沒接到|重新答我/.test(input)) {
     return `${userName}，我剛剛可能急著把話整理好，沒有先貼到你當下的位置。事實是：你在捷運月台、想要一句清楚一點的回應；陪伴是：我這次會短一點，先跟上你，不黏著你。`;
@@ -2264,10 +2539,10 @@ function fallbackReplyFor(conversation, safety) {
     return `${userName}，先說重點：張忠謀最近常被提到，通常會連到台積電、半導體、AI 算力和全球科技供應鏈的脈絡。若要講成即時新聞，我會先標出來源；但只用背景理解的話，他代表的是台灣晶片產業在 AI 時代為什麼仍然被世界關注。`;
   }
   if (/黃仁勳|Jensen Huang/i.test(input)) {
-    return `${userName}，你提醒得對，這題要先回答人名：黃仁勳是 NVIDIA（輝達）的共同創辦人兼執行長，常被提到是因為 GPU、AI 晶片、資料中心和生成式 AI 的發展都跟 NVIDIA 很有關。晚餐先拿好，我把重點放這裡就好，不追問你。`;
+    return `${userName}，先回答人名：黃仁勳是 NVIDIA（輝達）的共同創辦人兼執行長。近年他常被提到，主要是因為 GPU、AI 晶片、資料中心和生成式 AI 的發展都跟 NVIDIA 很有關；這題先到這裡就夠，不把它講成百科全書。`;
   }
   if (/Render.*上線流程|上線流程.*Render|把Render|Render 上線/.test(input) && /很爛|做得很爛|怕/.test(input)) {
-    return `${userName}，我先不急著修。你怕自己做得很爛，可能是因為你真的在意它能不能穩穩上線；手上還拿著晚餐的話，先讓這件事停在這裡一下。它可以明天再被檢查，你不用今晚就把自己判完。`;
+    return `${userName}，我先不急著修。你怕自己做得很爛，可能是因為你真的在意它能不能穩穩上線；先讓這件事停在這裡一下。它可以明天再被檢查，你不用今晚就把自己判完。`;
   }
   if (/不要猜|不是在吵架|提醒你/.test(input)) {
     return `${userName}，你提醒得對，我不該用猜的把你的話補滿。事實是：你剛回完主管訊息，現在比較需要我穩一點；我只問一個，你想我先接住情緒，還是先幫你整理那則訊息？`;
@@ -2722,7 +2997,7 @@ function shouldUseGroundedReply(conversation, safety) {
   if (/^(AI|人工智慧|什麼是AI|AI是什麼|人工智慧是什麼|什麼是人工智慧)/i.test(input.replace(/[，,。！？!?\s]/g, ""))) return true;
   if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /AIEXPO|AI\s*Expo|COMPUTEX/i.test(input)) return true;
   if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /Google\s*I\/O|TAITRONICS/i.test(input)) return true;
-  if (/第一次.*跟你講話|今天第一次.*講話|你會怎麼陪我|工作做不好|覺得很焦慮|我現在很焦慮|焦慮怎麼辦|明天.*工作|空空的|不知道怎麼講|剛到家|手機快沒電|捷運月台|張忠謀|黃仁勳|Jensen Huang|Render.*上線|上線流程.*Render|不要猜|提醒你|不要問我想聊什麼|主動選一個|你主動選|畢業專題.*demo|demo.*心情|AIEXPO.*Samantha|Samantha.*心情|先承認|哪裡可能沒接到|一句事實再一句陪伴|只問我一個問題|陪我收斂|收斂一下|自己開.*COMPUTEX|COMPUTEX.*話題|隨便聊|聊一下|不知道聊什麼|陪我聊|不要像客服|別像客服|日常聊天|不要說教|不要一直問|不要一直追問|先不要列步驟|不要列步驟|不要開始分析|只回我你聽到了|^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input)) return true;
+  if (/第一次.*跟你講話|今天第一次.*講話|你會怎麼陪我|工作做不好|覺得很焦慮|我現在很焦慮|焦慮怎麼辦|明天.*工作|空空的|不知道怎麼講|生氣.*累|累.*生氣|剛到家|手機快沒電|捷運月台|張忠謀|黃仁勳|Jensen Huang|Render.*上線|上線流程.*Render|不要猜|提醒你|不要問我想聊什麼|主動選一個|你主動選|畢業專題.*demo|demo.*心情|AIEXPO.*Samantha|Samantha.*心情|先承認|哪裡可能沒接到|一句事實再一句陪伴|只問我一個問題|陪我收斂|收斂一下|自己開.*COMPUTEX|COMPUTEX.*話題|隨便聊|聊一下|不知道聊什麼|陪我聊|不要像客服|別像客服|日常聊天|不要說教|不要一直問|不要一直追問|先不要列步驟|不要列步驟|不要開始分析|只回我你聽到了|^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input)) return true;
   if (/切成.*(今天晚上|今晚).*一小步|今天晚上能做的一小步|今晚能做的一小步|不那麼可怕的待辦/.test(input)) return true;
   if (/是不是太焦慮|我是不是太焦慮|太焦慮了/.test(input)) return true;
   if (/自己開一句|不要問卷式|用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型/i.test(input)) return true;
@@ -2819,12 +3094,13 @@ async function naturalizeGroundedResult(groundedResult, conversation, attempts) 
         ...(normalized.memory_patch || [])
       ].filter(Boolean).slice(0, 3);
       normalized.intimacy_delta = Math.max(groundedResult.intimacy_delta || 0, normalized.intimacy_delta || 0);
-      return {
+      return withTokenUsage({
         result: normalized,
         provider: `${routed.provider}+grounded`,
         model: `${routed.model}+rules_plus_retrieval`,
-        latency_ms
-      };
+        latency_ms,
+        usage: routed.usage
+      }, payload);
     } catch (error) {
       markProviderFailure(naturalizeKey, error);
       attempts.push({ provider: naturalizeKey, error: sanitizeError(error.message) });
@@ -2851,7 +3127,7 @@ function localPolishGroundedResult(groundedResult, conversation) {
   if (/不要罐頭|別罐頭|怎麼陪我聊|你會怎麼陪我聊|不要像客服|別像客服|日常聊天|不要說教|不要一直問|不要一直追問/.test(input) && !/有點煩|心裡.*堵|記得|去哪裡|去了哪裡|前面說|你還記得|張忠謀|黃仁勳|Jensen|最近|AIEXPO|AI\s*Expo|Samantha|COMPUTEX|Render|上線|主管|不要猜|提醒你|主動選|畢業專題|demo/i.test(input)) {
     reply = pickVariant([
       `${userName}，我會先聽你真正丟過來的那一句，不急著把它變成建議或標籤；你想閒聊，我就陪你把話慢慢接下去。`,
-      `${userName}，那我就不把自己講成功能表。你說到哪裡，我先跟到哪裡；需要查資料時我會查，需要安靜一點時我就陪你慢一點。`,
+      `${userName}，可以。你不用先整理好再來找我；你想到哪裡就說到哪裡，我先跟上，再慢慢陪你把話放清楚。`,
       `${userName}，可以。我不會硬塞一套流程給你；你先丟一個念頭，我會像在旁邊陪你整理桌面一樣，先接住，再一起看下一句。`,
       `${userName}，懂，我少問一點，也不說教。你心情還沒穩的時候，我先陪你把話放鬆，不急著把它整理成答案。`
     ]);
@@ -2934,7 +3210,7 @@ async function callOpenAI(payload) {
   if (!response.ok) throw new Error(data?.error?.message || `OpenAI failed with ${response.status}`);
   const text = data.output_text || data.output?.flatMap(item => item.content || []).find(content => content.type === "output_text")?.text;
   if (!text) throw new Error("OpenAI response did not include output text");
-  return JSON.parse(text);
+  return { result: JSON.parse(text), usage: normalizeProviderUsage(data.usage) };
 }
 
 async function callCodexApi(payload) {
@@ -2960,7 +3236,7 @@ async function callCodexApi(payload) {
   if (!response.ok) throw new Error(data?.error?.message || `Codex API failed with ${response.status}`);
   const text = data.output_text || data.output?.flatMap(item => item.content || []).find(content => content.type === "output_text")?.text;
   if (!text) throw new Error("Codex API response did not include output text");
-  return extractJsonObject(text);
+  return { result: extractJsonObject(text), usage: normalizeProviderUsage(data.usage) };
 }
 
 async function callCodexWorker(payload) {
@@ -2976,7 +3252,10 @@ async function callCodexWorker(payload) {
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data?.error || `Codex worker failed with ${response.status}`);
-  return extractJsonObject(JSON.stringify(data.reply ? data : data.result || data));
+  return {
+    result: extractJsonObject(JSON.stringify(data.reply ? data : data.result || data)),
+    usage: normalizeProviderUsage(data.usage || data.result?.usage || data.reply?.usage)
+  };
 }
 
 function asChatMessages(payload) {
@@ -3008,7 +3287,7 @@ async function callOpenAICompatible({ provider, apiKey, baseUrl, model, payload,
   const content = data?.choices?.[0]?.message?.content;
   const text = Array.isArray(content) ? content.map(part => part.text || part.content || "").join("") : content;
   if (!text) throw new Error(`${provider} response did not include message content`);
-  return extractJsonObject(text);
+  return { result: extractJsonObject(text), usage: normalizeProviderUsage(data.usage) };
 }
 
 async function callGeminiModel(model, payload) {
@@ -3032,14 +3311,15 @@ async function callGeminiModel(model, payload) {
   if (!response.ok) throw new Error(data?.error?.message || `Gemini failed with ${response.status}`);
   const text = data?.candidates?.[0]?.content?.parts?.map(part => part.text || "").join("");
   if (!text) throw new Error("Gemini response did not include text");
-  return extractJsonObject(text);
+  return { result: extractJsonObject(text), usage: normalizeProviderUsage(data.usageMetadata) };
 }
 
 async function callGemini(payload) {
   const errors = [];
   for (const model of GEMINI_MODELS) {
     try {
-      return { result: await callGeminiModel(model, payload), model };
+      const called = await callGeminiModel(model, payload);
+      return { result: called.result, model, usage: called.usage };
     } catch (error) {
       errors.push(`${model}: ${sanitizeError(error.message)}`);
     }
@@ -3184,7 +3464,7 @@ async function callCodexCli(payload) {
         "-Command", psCommand
       ], { timeout: timeoutMs });
     }
-    return extractJsonObject(fs.readFileSync(outputFile, "utf8"));
+    return { result: extractJsonObject(fs.readFileSync(outputFile, "utf8")), usage: null };
   } finally {
     fs.rm(outputFile, { force: true }, () => {});
     fs.rm(promptFile, { force: true }, () => {});
@@ -3214,20 +3494,23 @@ async function callProvider(provider, payload, conversation) {
   if (provider === "mock") return { result: mockModel(conversation), provider: "mock", model: "mock" };
   if (provider === "openai") {
     if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not set");
-    return { result: await callOpenAI({ ...payload, model: payload.model || OPENAI_MODEL }), provider, model: payload.model || OPENAI_MODEL };
+    const called = await callOpenAI({ ...payload, model: payload.model || OPENAI_MODEL });
+    return { result: called.result, usage: called.usage, provider, model: payload.model || OPENAI_MODEL };
   }
   if (provider === "gemini") {
     if (!GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
     const routed = await callGemini(payload);
-    return { result: routed.result, provider, model: routed.model };
+    return { result: routed.result, usage: routed.usage, provider, model: routed.model };
   }
   if (provider === "groq") {
     if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY not set");
-    return { result: await callOpenAICompatible({ provider, apiKey: GROQ_API_KEY, baseUrl: "https://api.groq.com/openai/v1", model: GROQ_MODEL, payload }), provider, model: GROQ_MODEL };
+    const called = await callOpenAICompatible({ provider, apiKey: GROQ_API_KEY, baseUrl: "https://api.groq.com/openai/v1", model: GROQ_MODEL, payload });
+    return { result: called.result, usage: called.usage, provider, model: GROQ_MODEL };
   }
   if (provider === "nvidia") {
     if (!NVIDIA_API_KEY) throw new Error("NVIDIA_API_KEY not set");
-    return { result: await callOpenAICompatible({ provider, apiKey: NVIDIA_API_KEY, baseUrl: "https://integrate.api.nvidia.com/v1", model: NVIDIA_MODEL, payload }), provider, model: NVIDIA_MODEL };
+    const called = await callOpenAICompatible({ provider, apiKey: NVIDIA_API_KEY, baseUrl: "https://integrate.api.nvidia.com/v1", model: NVIDIA_MODEL, payload });
+    return { result: called.result, usage: called.usage, provider, model: NVIDIA_MODEL };
   }
   if (provider === "openrouter") {
     if (!OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY not set");
@@ -3242,20 +3525,23 @@ async function callProvider(provider, payload, conversation) {
           payload,
           extraHeaders: { "HTTP-Referer": "https://cloud-lover.local", "X-Title": "Cloud Lover" }
         });
-        return { result, provider, model };
+        return { result: result.result, usage: result.usage, provider, model };
       } catch (error) {
         errors.push(`${model}: ${sanitizeError(error.message)}`);
       }
     }
     throw new Error(`OpenRouter models failed: ${errors.join(" | ")}`);
   }
-  if (provider === "codex") return { result: await callCodex(payload), provider, model: CODEX_MODEL };
+  if (provider === "codex") {
+    const called = await callCodex(payload);
+    return { result: called.result, usage: called.usage, provider, model: CODEX_MODEL };
+  }
   throw new Error(`Unknown provider: ${provider}`);
 }
 
 async function routeProviders(payload, conversation, options = {}) {
   const cached = getCachedResponse(conversation);
-  if (cached) return { ...cached, attempts: [{ provider: "cache", error: "cache hit" }], cache_hit: true };
+  if (cached) return { ...cached, attempts: [{ provider: "cache", error: "cache hit" }], cache_hit: true, usage: cacheHitUsage(cached) };
   const routeStartedAt = now();
   const attempts = [];
   const groundedResult = groundedModel(conversation);
@@ -3267,14 +3553,14 @@ async function routeProviders(payload, conversation, options = {}) {
       return { ...value, attempts };
     }
     const polished = localPolishGroundedResult(groundedResult, conversation);
-    return {
+    return withTokenUsage({
       result: polished.result,
       provider: "grounded",
       model: polished.changed ? "rules_plus_retrieval+local_style_variation" : "rules_plus_retrieval",
       latency_ms: now() - routeStartedAt,
       attempts,
       cache_hit: false
-    };
+    }, payload);
   }
   const realProviderOrder = PROVIDER_ORDER.filter(provider => provider !== "mock");
   for (const provider of realProviderOrder) {
@@ -3288,7 +3574,7 @@ async function routeProviders(payload, conversation, options = {}) {
       const routed = await callProvider(provider, payload, conversation);
       const latency_ms = now() - start;
       markProviderSuccess(provider, latency_ms);
-      const value = { ...routed, result: normalizeProviderResult(routed.result, conversation), latency_ms };
+      const value = withTokenUsage({ ...routed, result: normalizeProviderResult(routed.result, conversation), latency_ms }, payload);
       if (routed.provider !== "mock") setCachedResponse(conversation, value);
       return { ...value, attempts, cache_hit: false };
     } catch (error) {
@@ -3298,7 +3584,7 @@ async function routeProviders(payload, conversation, options = {}) {
   }
   const lookupResult = lookupModel(conversation);
   if (lookupResult) {
-    return { result: lookupResult, provider: "lookup", model: "web_facts", latency_ms: now() - routeStartedAt, attempts, cache_hit: false };
+    return withTokenUsage({ result: lookupResult, provider: "lookup", model: "web_facts", latency_ms: now() - routeStartedAt, attempts, cache_hit: false }, payload);
   }
   const safety = detectSafety(conversation.user_input || "");
   const fallbackText = fallbackReplyFor(conversation, safety);
@@ -3312,14 +3598,14 @@ async function routeProviders(payload, conversation, options = {}) {
       suggested_action: "延續目前這段對話"
     }, conversation);
     const polished = localPolishGroundedResult(fallbackResult, conversation);
-    return {
+    return withTokenUsage({
       result: polished.result,
       provider: "grounded",
       model: polished.changed ? "provider_failure_fallback+local_style_variation" : "provider_failure_fallback",
       latency_ms: now() - routeStartedAt,
       attempts,
       cache_hit: false
-    };
+    }, payload);
   }
   if (ENABLE_MOCK_FALLBACK) {
     const mockDelayMs = Number.isFinite(Number(options.mockFallbackDelayMs)) ? Number(options.mockFallbackDelayMs) : MOCK_FALLBACK_DELAY_MS;
@@ -3328,7 +3614,7 @@ async function routeProviders(payload, conversation, options = {}) {
       attempts.push({ provider: "mock", error: `delayed ${remainingDelay}ms before fallback` });
       await sleep(remainingDelay);
     }
-    return { result: mockModel(conversation), provider: "mock", model: "mock", latency_ms: now() - routeStartedAt, attempts, cache_hit: false };
+    return withTokenUsage({ result: mockModel(conversation), provider: "mock", model: "mock", latency_ms: now() - routeStartedAt, attempts, cache_hit: false }, payload);
   }
   const error = new Error("All LLM providers failed");
   error.statusCode = 503;
@@ -3345,6 +3631,7 @@ function publicDebug(routed) {
     provider_order: PROVIDER_ORDER,
     safety_gate: routed.result.safety,
     attempts: routed.attempts,
+    token_usage: routed.usage,
     provider_health: providerHealthSnapshot()
   };
 }
@@ -3900,6 +4187,15 @@ function summarizeEvaluationRun(messages) {
   const topIssues = [...issueCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([code, count]) => ({ code, count }));
   const providers = new Map();
   const latencies = [];
+  const tokenUsage = assistantMessages.reduce((acc, item) => {
+    const usage = item.usage || {};
+    acc.input_tokens += clampInteger(usage.input_tokens, 0);
+    acc.output_tokens += clampInteger(usage.output_tokens, 0);
+    acc.total_tokens += clampInteger(usage.total_tokens, 0);
+    acc.billable_tokens += clampInteger(usage.billable_tokens, 0);
+    acc.messages += 1;
+    return acc;
+  }, { input_tokens: 0, output_tokens: 0, total_tokens: 0, billable_tokens: 0, messages: 0 });
   for (const item of assistantMessages) {
     if (item.provider) providers.set(item.provider, (providers.get(item.provider) || 0) + 1);
     if (Number.isFinite(Number(item.latency_ms))) latencies.push(Number(item.latency_ms));
@@ -3919,6 +4215,11 @@ function summarizeEvaluationRun(messages) {
       low_issues: issues.filter(issue => issue.severity === "low").length,
       top_issues: topIssues,
       providers: Object.fromEntries(providers.entries()),
+      token_usage: {
+        ...tokenUsage,
+        avg_tokens_per_reply: tokenUsage.messages ? Math.round(tokenUsage.total_tokens / tokenUsage.messages) : 0,
+        avg_billable_tokens_per_reply: tokenUsage.messages ? Math.round(tokenUsage.billable_tokens / tokenUsage.messages) : 0
+      },
       avg_latency_ms: latencies.length ? Math.round(latencies.reduce((sum, item) => sum + item, 0) / latencies.length) : 0
     }
   };
@@ -3977,12 +4278,13 @@ function rescoreEvaluationMessages(messages) {
 function rescoreEvaluationRun(run, messages) {
   if (!run) return run;
   const summary = summarizeEvaluationRun(rescoreEvaluationMessages(messages));
+  const preservedTokenUsage = run.metrics?.token_usage || run.metrics?.tokens || null;
   return {
     ...run,
     score: summary.score,
     summary: summary.summary,
     issues: summary.issues,
-    metrics: summary.metrics
+    metrics: preservedTokenUsage ? { ...summary.metrics, token_usage: preservedTokenUsage } : summary.metrics
   };
 }
 
@@ -4136,7 +4438,8 @@ async function runEvaluation({ user, mode, scenarioKey, turns }) {
       provider: routed.provider,
       score: assessment.score,
       issues: assessment.issues,
-      latency_ms: routed.latency_ms
+      latency_ms: routed.latency_ms,
+      usage: routed.usage
     };
     messages.push(userMessage, assistantMessage);
     transcript.push({ role: "tester", content: userInput }, { role: "assistant", content: reply });
@@ -4250,7 +4553,8 @@ async function handleChat(req, res) {
         emotion: routed.result.emotion,
         provider: routed.provider,
         character_key: normalizeCharacterKey(effectiveConversation?.lover_profile?.character_key || "samantha"),
-        lover_name: "Samantha"
+        lover_name: "Samantha",
+        ...tokenMetaFromRoute(routed)
       });
       await mergeMemories(user.id, routed.result.memory_patch || []);
       response.samantha_brain = await updateSamanthaBrain(user.id, effectiveConversation, emotionState, routed.result);

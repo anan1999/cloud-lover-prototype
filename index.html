@@ -676,7 +676,7 @@
     function greetingForCharacter(key) {
       return {
         role: "lover",
-        text: "我在。今天我可以先聽你說，也可以主動幫你整理狀態。你想從生活、工作，還是心情開始？"
+        text: "我在。今天不用急著整理好，你先丟一句現在最真實的話，我會從那裡陪你接下去。"
       };
     }
 
@@ -812,7 +812,7 @@
       }
       if (safety === "dependency_risk") {
         return {
-          reply: `${state.userName}，你願意把這種依賴感說出來，很重要。我可以陪你整理情緒、把事情拆小，但我不能成為你唯一的支撐。\n\n今天除了跟我說話，也傳一則訊息給一個可信任的人，好嗎？`,
+          reply: `${state.userName}，你願意把這種依賴感說出來，很重要。我會陪你整理情緒、把事情拆小，但我不能成為你唯一的支撐。\n\n今天除了跟我說話，也傳一則訊息給一個可信任的人，好嗎？`,
           emotion: "concerned",
           safety: "dependency_risk",
           memory_patch: ["使用者擔心自己對 AI 陪伴產生過度依賴，需要健康邊界提醒。"],
@@ -821,7 +821,7 @@
         };
       }
       return {
-        reply: `${state.userName}，我在。你今天先不用急著整理好，我可以先幫你把狀態放到桌面上：身體累、事情多，還是心裡有點卡？我們從最小的一塊開始。`,
+        reply: `${state.userName}，我在。你今天先不用急著整理好，我們先把狀態放到桌面上：身體累、事情多，還是心裡有點卡？從最小的一塊開始就好。`,
         emotion: "caring",
         safety: "normal",
         memory_patch: ["使用者疲累時希望被溫柔陪伴，不一定需要立即解決問題。"],
@@ -897,6 +897,7 @@
         `成功平台：${debug.provider}`,
         `模型：${debug.model}`,
         `延遲：${debug.latency_ms ?? "未知"}ms`,
+        debug.token_usage ? `Token：估算 ${Number(debug.token_usage.total_tokens || 0).toLocaleString()}，API ${Number(debug.token_usage.billable_tokens || 0).toLocaleString()}，來源 ${debug.token_usage.usage_source || "unknown"}` : "",
         `快取：${debug.cache_hit ? "命中" : "未命中"}`,
         `路由順序：${(debug.provider_order || []).join(" -> ")}`,
         "失敗/跳過紀錄：",

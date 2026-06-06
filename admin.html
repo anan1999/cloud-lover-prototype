@@ -84,6 +84,9 @@
     .bar-row { display: grid; grid-template-columns: 92px 1fr 44px; gap: 10px; align-items: center; font-size: 13px; color: var(--muted); }
     .bar { height: 9px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
     .bar span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--teal), var(--gold)); }
+    .bar-row strong { color: var(--text); text-align: right; }
+    .bar-row strong small { display: block; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 1.25; }
+    .token-bars .bar-row { grid-template-columns: minmax(120px, 170px) 1fr minmax(82px, 112px); }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
     th { color: var(--muted); font-weight: 500; }
@@ -223,6 +226,33 @@
 
       <section class="grid two">
         <div class="card">
+          <div class="section-head">
+            <div>
+              <h2>Token 消耗</h2>
+              <p class="muted">估算總量看上下文大小；API token 代表推定外部模型消耗。</p>
+            </div>
+          </div>
+          <div class="grid three" id="tokenMetrics"></div>
+        </div>
+        <div class="card">
+          <h2>Token by Provider</h2>
+          <div class="bars token-bars" id="tokenProviderBars"></div>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <div class="card">
+          <h2>近 14 天 Token</h2>
+          <div class="bars token-bars" id="tokenDailyBars"></div>
+        </div>
+        <div class="card">
+          <h2>Token by Model</h2>
+          <div class="bars token-bars" id="tokenModelBars"></div>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <div class="card">
           <h2>情緒分布</h2>
           <div class="bars" id="emotionBars"></div>
         </div>
@@ -271,6 +301,7 @@
   <script>
     const $ = selector => document.querySelector(selector);
     const fmt = value => new Intl.DateTimeFormat("zh-TW", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
+    const num = value => Number(value || 0).toLocaleString();
     const escapeHtml = text => String(text ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
     let evaluationScenarios = {};
 
@@ -332,6 +363,42 @@
       }).join("") : `<p class="muted">還沒有資料。</p>`;
     }
 
+    function renderTokenBars(selector, rows, labelKey) {
+      const list = rows || [];
+      const max = Math.max(1, ...list.map(row => Number(row.total_tokens || 0)));
+      $(selector).innerHTML = list.length ? list.map(row => {
+        const label = row[labelKey] || "unknown";
+        const total = Number(row.total_tokens || 0);
+        const billable = Number(row.billable_tokens || 0);
+        const width = Math.max(4, total / max * 100);
+        return `
+          <div class="bar-row">
+            <span>${escapeHtml(label)}</span>
+            <div class="bar"><span style="width:${width}%"></span></div>
+            <strong>${num(total)}<small>API ${num(billable)}</small></strong>
+          </div>
+        `;
+      }).join("") : `<p class="muted">還沒有 token 資料。</p>`;
+    }
+
+    function renderTokenDashboard(data) {
+      const usage = data.token_usage || {};
+      const items = [
+        ["估算總 Tokens", usage.total_tokens],
+        ["推定 API Tokens", usage.billable_tokens],
+        ["輸入 Tokens", usage.input_tokens],
+        ["輸出 Tokens", usage.output_tokens],
+        ["平均 / 回覆", usage.avg_tokens_per_reply],
+        ["API 平均 / 回覆", usage.avg_billable_tokens_per_reply]
+      ];
+      $("#tokenMetrics").innerHTML = items.map(([label, value]) => `
+        <div class="metric eval-metric"><span>${label}</span><strong>${num(value)}</strong></div>
+      `).join("");
+      renderTokenBars("#tokenProviderBars", data.token_providers || [], "provider");
+      renderTokenBars("#tokenDailyBars", data.token_daily || [], "day");
+      renderTokenBars("#tokenModelBars", data.token_models || [], "model");
+    }
+
     function scoreClass(score) {
       if (score >= 85) return "good";
       if (score >= 70) return "warn";
@@ -369,6 +436,10 @@
       const bankSummary = data.question_bank_summary;
       if (bankSummary?.total_questions) {
         metrics.push(["題庫", `${Number(bankSummary.total_questions || 0).toLocaleString()} 題 / ${Number(bankSummary.total_threads || 0).toLocaleString()} 串`]);
+      }
+      if (latest?.metrics?.token_usage) {
+        metrics.push(["測試 Tokens", num(latest.metrics.token_usage.total_tokens)]);
+        metrics.push(["測試 API Tokens", num(latest.metrics.token_usage.billable_tokens)]);
       }
       $("#evalMetrics").innerHTML = metrics.map(([label, value]) => `<div class="metric eval-metric"><span>${label}</span><strong>${value}</strong></div>`).join("");
       const trend = data.score_trend || [];
@@ -474,6 +545,7 @@
       renderMetrics(data.overview);
       renderBars("#dailyBars", data.daily, "day");
       renderBars("#providerBars", data.providers, "provider");
+      renderTokenDashboard(data);
       renderBars("#emotionBars", (data.emotion_distribution || []).map(item => ({ emotion: item.emotion, messages: item.events })), "emotion");
       renderBars("#emotionDailyBars", (data.emotion_daily || []).map(item => ({ day: item.day, messages: item.avg_intensity })), "day");
       renderTables(data);

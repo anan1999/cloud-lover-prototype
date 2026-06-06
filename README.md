@@ -73,7 +73,7 @@ For broader coverage, sample the 10,000-question bank:
 
 ```powershell
 $env:BANK_SAMPLE_URL="http://127.0.0.1:8787"
-$env:BANK_SAMPLE_LIMIT="90"
+$env:BANK_SAMPLE_LIMIT="100"
 $env:BANK_SAMPLE_CASE_TIMEOUT_MS="8000"
 npm run eval:sample
 ```
@@ -83,11 +83,17 @@ npm run eval:sample
 ## Product Architecture
 
 - Frontend: `index.html` chat UI, account UI, companion settings, conversation mode selector, memory panel, and developer diagnostics.
-- Backend: `server.js` static server, auth, chat API, memory manager, emotion detector, prompt builder, provider router, and admin APIs.
+- Backend: `server.js` static server, auth, chat API, memory manager, emotion detector, prompt builder, provider router, token usage tracking, and admin APIs.
 - Data: Neon Postgres in production, local JSON fallback in development.
 - Docs: see [docs/architecture.md](./docs/architecture.md), [docs/prompt_design.md](./docs/prompt_design.md), and [docs/safety_guidelines.md](./docs/safety_guidelines.md).
 
 Reply routing is intentionally layered, so not every answer is pure Google LLM output. Open-ended chat goes through Gemini first and Codex second. Safety, memory recall, fact repair, and known regression cases first build a grounded draft from retrieval/rules; when a provider is available, Gemini or Codex naturalizes that draft into a warmer Samantha voice. If providers are unavailable, Samantha can still use local style variation on the grounded draft. This keeps mock disabled while avoiding stale canned replies.
+
+Admin dashboard:
+
+- Open `/admin.html` with an email listed in `ADMIN_EMAILS`.
+- Token panels show estimated context/reply tokens, inferred API tokens, provider totals, model totals, and the last 14 days of token usage.
+- Grounded/rules replies record estimated text tokens but show `0` API tokens because they do not call a paid external model.
 
 Conversation modes:
 
