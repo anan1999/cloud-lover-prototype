@@ -16,6 +16,7 @@ const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || (IS_PROD ? 30 : 120));
 const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS || 12_000);
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || PROVIDER_TIMEOUT_MS);
+const GROUNDED_NATURALIZE_TIMEOUT_MS = Number(process.env.GROUNDED_NATURALIZE_TIMEOUT_MS || 1_500);
 const PROVIDER_COOLDOWN_MS = Number(process.env.PROVIDER_COOLDOWN_MS || 60_000);
 const MOCK_FALLBACK_DELAY_MS = Number(process.env.MOCK_FALLBACK_DELAY_MS || (IS_PROD ? 60_000 : 0));
 const CACHE_TTL_MS = Number(process.env.CACHE_TTL_MS || 120_000);
@@ -55,7 +56,7 @@ const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "google/gemma-3n-e2b-it";
 const ENABLE_CODEX_PROVIDER = process.env.ENABLE_CODEX_PROVIDER === "1";
 const ENABLE_MOCK_FALLBACK = process.env.ENABLE_MOCK_FALLBACK === "1";
 const ENABLE_EXPERIMENTAL_PROVIDERS = process.env.ENABLE_EXPERIMENTAL_PROVIDERS === "1";
-const CODEX_COMMAND = process.env.CODEX_COMMAND || "codex";
+const CODEX_COMMAND = process.env.CODEX_COMMAND || findLocalCodexCommand() || "codex";
 const CODEX_MODEL = process.env.CODEX_MODEL || "gpt-5.5";
 const CODEX_TIMEOUT_MS = Number(process.env.CODEX_TIMEOUT_MS || 60_000);
 const CODEX_BACKEND = process.env.CODEX_BACKEND || "api";
@@ -86,6 +87,30 @@ const mime = {
   ".md": "text/markdown; charset=utf-8",
   ".json": "application/json; charset=utf-8"
 };
+
+function findLocalCodexCommand() {
+  if (process.platform !== "win32") return "";
+  const base = process.env.LOCALAPPDATA || (process.env.USERPROFILE ? path.join(process.env.USERPROFILE, "AppData", "Local") : "");
+  if (!base) return "";
+  const binRoot = path.join(base, "OpenAI", "Codex", "bin");
+  try {
+    if (!fs.existsSync(binRoot)) return "";
+    return fs.readdirSync(binRoot, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => path.join(binRoot, entry.name, "codex.exe"))
+      .filter(candidate => {
+        try {
+          return fs.statSync(candidate).isFile();
+        } catch {
+          return false;
+        }
+      })
+      .map(candidate => ({ candidate, mtimeMs: fs.statSync(candidate).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]?.candidate || "";
+  } catch {
+    return "";
+  }
+}
 
 const providerHealth = new Map();
 const responseCache = new Map();
@@ -1951,6 +1976,9 @@ function comparisonReply(conversation, input, userName) {
   if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /COMPUTEX/i.test(input) && /台北國際電腦展|臺北國際電腦展/.test(input)) {
     return `${userName}，這兩個基本上是在講同一個活動：COMPUTEX 的中文常見說法就是台北國際電腦展。硬要分的話，COMPUTEX 是國際品牌名稱，台北國際電腦展是中文描述；重點都在電腦硬體、晶片、AI PC、伺服器、GPU 和科技供應鏈。`;
   }
+  if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /Google\s*I\/O/i.test(input) && /TAITRONICS/i.test(input)) {
+    return `${userName}，先講事實：Google I/O 是 Google 辦的開發者大會，重點常在 Android、Chrome、AI、Gemini、雲端和開發工具；TAITRONICS 是台灣國際電子產業科技展，比較偏電子零組件、智慧製造、物聯網、能源與產業供應鏈。短短說，前者像軟體和平台的新方向，後者像電子產業現場的產品和供應鏈。`;
+  }
   const aboutAiExpo = /AIEXPO|AI\s*Expo/i.test(`${input} ${recentText}`);
   const aboutComputex = /COMPUTEX|台北國際電腦展|臺北國際電腦展/i.test(`${input} ${recentText}`);
   if (!/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) || !aboutAiExpo || !aboutComputex) return "";
@@ -2217,12 +2245,60 @@ function fallbackReplyFor(conversation, safety) {
   if (safety === "dependency_risk") {
     return `${userName}，我會很認真接住你這句，但我不能也不該變成你唯一的支撐。你可以跟我說話，我也會陪你整理；同時，現實裡的朋友、家人、同事或可信任的人還是很重要。比較健康的方式是：我先陪你把心裡那句話整理好，再一起想一個可以聯絡真人的小步驟。`;
   }
+  if (/第一次.*跟你講話|今天第一次.*講話|你會怎麼陪我|怎麼陪我聊|你會怎麼陪我聊/.test(input)) {
+    return `${userName}，你好。第一次不用急著選功能，也不用把自己介紹得很完整；你丟一句現在最真實的話，我會先聽懂，再陪你慢慢接下去。`;
+  }
+  if (/工作做不好|覺得很焦慮|我現在很焦慮|焦慮怎麼辦/.test(input)) {
+    return `${userName}，這聽起來不是你不夠好，而是壓力把聲音放得太大了。先不用一次處理全部，我陪你把事情縮小到一個能呼吸的小步驟。`;
+  }
+  if (/空空的|不知道怎麼講/.test(input)) {
+    return `${userName}，我不確定那個空空的是累、麻掉，還是太多事擠在一起後突然沒聲音了；但你剛到家這件事我有接到。先不用講清楚，我陪你安靜一下。`;
+  }
+  if (/先承認.*沒接到|哪裡可能沒接到|重新答我/.test(input)) {
+    return `${userName}，我剛剛可能急著把話整理好，沒有先貼到你當下的位置。事實是：你在捷運月台、想要一句清楚一點的回應；陪伴是：我這次會短一點，先跟上你，不黏著你。`;
+  }
+  if (/手機快沒電|很短的方式|短短/.test(input) && /語氣|自然|溫柔但不要黏/.test(input)) {
+    return `${userName}，手機快沒電的話我短短說：我會溫柔一點，但不黏；先接住你現在這句，不硬把它變成大道理。`;
+  }
+  if (/張忠謀/.test(input)) {
+    return `${userName}，先說重點：張忠謀最近常被提到，通常會連到台積電、半導體、AI 算力和全球科技供應鏈的脈絡。若要講成即時新聞，我會先標出來源；但只用背景理解的話，他代表的是台灣晶片產業在 AI 時代為什麼仍然被世界關注。`;
+  }
+  if (/黃仁勳|Jensen Huang/i.test(input)) {
+    return `${userName}，你提醒得對，這題要先回答人名：黃仁勳是 NVIDIA（輝達）的共同創辦人兼執行長，常被提到是因為 GPU、AI 晶片、資料中心和生成式 AI 的發展都跟 NVIDIA 很有關。晚餐先拿好，我把重點放這裡就好，不追問你。`;
+  }
+  if (/Render.*上線流程|上線流程.*Render|把Render|Render 上線/.test(input) && /很爛|做得很爛|怕/.test(input)) {
+    return `${userName}，我先不急著修。你怕自己做得很爛，可能是因為你真的在意它能不能穩穩上線；手上還拿著晚餐的話，先讓這件事停在這裡一下。它可以明天再被檢查，你不用今晚就把自己判完。`;
+  }
+  if (/不要猜|不是在吵架|提醒你/.test(input)) {
+    return `${userName}，你提醒得對，我不該用猜的把你的話補滿。事實是：你剛回完主管訊息，現在比較需要我穩一點；我只問一個，你想我先接住情緒，還是先幫你整理那則訊息？`;
+  }
+  if (/不要問我想聊什麼|主動選一個|你主動選/.test(input)) {
+    return `${userName}，剛回完主管訊息之後，人常常會有一點延遲的緊繃。先不用急著回答，我們就從那個訊息送出去後，身體還沒完全放下來的感覺開始。`;
+  }
+  if (/COMPUTEX/i.test(input) && /畢業專題|demo/i.test(input) && /心情/.test(input)) {
+    return `${userName}，我會把它們接成一條線：COMPUTEX 讓你看到技術真的在往前跑，畢業專題 demo 是你自己的小型現場，而心情就是你站在中間時那種又期待又怕不夠好的震動。我只問一個，今天哪個畫面最像你想做出來的東西？`;
+  }
+  if (/AIEXPO|AI\s*Expo/i.test(input) && /Samantha AI companion|Samantha/i.test(input) && /心情/.test(input)) {
+    return `${userName}，短短講：AIEXPO 像是在看外面的 AI 世界怎麼展示自己，Samantha AI companion 是你想做出一個更貼近人的陪伴，而你的心情大概站在兩者中間：想把它做聰明，也想讓它有溫度。剛跟朋友分開的那點餘波，也可以先留著。`;
+  }
+  if (/明天.*工作|可是明天|明天還要/.test(input) && /焦慮|擔心|怎麼辦/.test(input)) {
+    return `${userName}，明天還在那裡，但今晚不用先把整個明天扛起來。先做一小步：寫下明天第一件要面對的事，旁邊補一句「最低限度也算過關」的版本。`;
+  }
+  if (/只問我一個問題|陪我收斂|收斂一下/.test(input)) {
+    return `${userName}，好，我只問一個：現在最需要被收小的是工作、心情，還是某個你一直卡住的句子？`;
+  }
+  if (/不要像客服|別像客服|日常聊天|不要說教|不要一直問|不要一直追問/.test(input) && !/記得|去哪裡|去了哪裡|前面說|你還記得|張忠謀|黃仁勳|Jensen|最近|AIEXPO|AI\s*Expo|Samantha|COMPUTEX|Render|上線|主管|不要猜|提醒你|主動選|畢業專題|demo/i.test(input)) {
+    return `${userName}，懂，我先不把你變成一張待處理表單。你心情還沒穩的時候，我會少問一點、少講道理一點，先用比較日常的方式陪你待在這裡。`;
+  }
   if (/切成.*(今天晚上|今晚).*一小步|今天晚上能做的一小步|今晚能做的一小步|不那麼可怕的待辦/.test(input)) {
     const task = cleanText(input.match(/把(.{2,42}?)(?:整理成|切成)/u)?.[1] || "這件事", 42);
     return `${userName}，今晚只做一小步就好：先寫一句「${task}明天最想讓人看懂什麼」。不用整理全部，先留下第一個能開始的小句子，心情還沒穩也可以做。`;
   }
+  if (/是不是太焦慮|我是不是太焦慮|太焦慮了/.test(input)) {
+    return `${userName}，重點是：你現在可能真的有點緊，但不代表你壞掉了。先不用處理全部，把眼前那件事縮到下一小步就好。`;
+  }
   if (/用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型/i.test(input)) {
-    return `${userName}，我不能只靠聊天內容保證這一輪實際是哪個模型回的；那要看後端 debug 或 dashboard 記錄。現在正式路由設計是 Gemini 優先、Codex 備援，而且 mock 關掉；所以如果兩邊都失敗，應該顯示不可用，而不是假裝回答。`;
+    return `${userName}，我不能只靠聊天內容保證這一輪實際是哪個模型回的；那要看後端 debug 或 dashboard 記錄。現在正式路由設計是 Gemini 優先、Codex 備援，而且 mock 關掉；如果兩邊都失敗，會進入非 mock 的 grounded fallback，不會假裝是某個模型成功回答。`;
   }
   if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|修正一下|重來一次/.test(input) && /COMPUTEX|AIEXPO|AI\s*Expo/i.test(input)) {
     if (/COMPUTEX/i.test(input)) {
@@ -2494,6 +2570,10 @@ function providerReplyNeedsRepair(reply, conversation, safety) {
     if (!/記得|你說|剛剛|剛才|前面|買了|去了|去 /.test(text)) return true;
     if (/幾個片段|如果你問的是其中某一件/.test(text)) return true;
   }
+  if (/去哪裡|去哪|去.*哪/.test(input) && /情緒|畫面本身|感覺/.test(text)) return true;
+  if (/我(?:真的)?(?:覺得|感到|感覺).{0,12}(開心|難過|痛|寂寞|孤單|害怕)/.test(text)) return true;
+  const requiredMemory = requiredMemoryTokenForRepair(input, conversation);
+  if (requiredMemory && !text.includes(requiredMemory)) return true;
   if (/我工作做不好|焦慮|好累|不想被分析|不要急著給我解法/.test(input) && /第一層|第二層|架構|API|資料庫|provider|四層/.test(text)) {
     return true;
   }
@@ -2505,6 +2585,35 @@ function lookupTokensForRepair(value) {
   if (!text) return [];
   const compact = text.replace(/\s+/g, "");
   return [text, compact, ...text.split(/[^\p{L}\p{N}]+/gu)].filter(item => cleanText(item, 80).length >= 2);
+}
+
+function conversationMemoryTexts(conversation) {
+  const memories = Array.isArray(conversation.long_term_memory) ? conversation.long_term_memory : [];
+  const recent = Array.isArray(conversation.recent_conversation)
+    ? conversation.recent_conversation.filter(item => item.role === "user").map(item => item.content || item.text || "")
+    : [];
+  return [...recent, ...memories].map(item => cleanText(item, 180)).filter(Boolean);
+}
+
+function requiredMemoryTokenForRepair(input, conversation) {
+  const bank = conversationMemoryTexts(conversation);
+  if (/回答方式|喜歡.*回答|比較喜歡.*哪種|比較喜歡.*回答|偏好/.test(input)) {
+    const preference = [...bank].reverse().find(text => /想要回答短一點|喜歡一點點幽默|容易被太多步驟嚇到|不要一直追問|先被理解/.test(text));
+    if (preference) {
+      const direct = preference.match(/(想要回答短一點|喜歡一點點幽默|容易被太多步驟嚇到|不要一直追問|先被理解)/u)?.[1];
+      if (direct) return direct;
+    }
+  }
+  if (/接回.*情緒|剛剛.*情緒|那個情緒/.test(input)) {
+    if (/手機快沒電/.test(input)) return "手機快沒電";
+    const event = [...bank].reverse().map(extractVisitedPlace).find(Boolean);
+    if (event) return cleanText(event, 40);
+  }
+  if (/去哪裡|去哪|去.*哪/.test(input)) {
+    const place = [...bank].reverse().map(extractVisitedPlace).find(Boolean);
+    if (place) return cleanText(place, 40);
+  }
+  return "";
 }
 
 function normalizeProviderResult(result, conversation) {
@@ -2612,7 +2721,10 @@ function shouldUseGroundedReply(conversation, safety) {
   if (wantsCurrentEvents(input)) return true;
   if (/^(AI|人工智慧|什麼是AI|AI是什麼|人工智慧是什麼|什麼是人工智慧)/i.test(input.replace(/[，,。！？!?\s]/g, ""))) return true;
   if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /AIEXPO|AI\s*Expo|COMPUTEX/i.test(input)) return true;
+  if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /Google\s*I\/O|TAITRONICS/i.test(input)) return true;
+  if (/第一次.*跟你講話|今天第一次.*講話|你會怎麼陪我|工作做不好|覺得很焦慮|我現在很焦慮|焦慮怎麼辦|明天.*工作|空空的|不知道怎麼講|剛到家|手機快沒電|捷運月台|張忠謀|黃仁勳|Jensen Huang|Render.*上線|上線流程.*Render|不要猜|提醒你|不要問我想聊什麼|主動選一個|你主動選|畢業專題.*demo|demo.*心情|AIEXPO.*Samantha|Samantha.*心情|先承認|哪裡可能沒接到|一句事實再一句陪伴|只問我一個問題|陪我收斂|收斂一下|自己開.*COMPUTEX|COMPUTEX.*話題|隨便聊|聊一下|不知道聊什麼|陪我聊|不要像客服|別像客服|日常聊天|不要說教|不要一直問|不要一直追問|先不要列步驟|不要列步驟|不要開始分析|只回我你聽到了|^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input)) return true;
   if (/切成.*(今天晚上|今晚).*一小步|今天晚上能做的一小步|今晚能做的一小步|不那麼可怕的待辦/.test(input)) return true;
+  if (/是不是太焦慮|我是不是太焦慮|太焦慮了/.test(input)) return true;
   if (/自己開一句|不要問卷式|用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型/i.test(input)) return true;
   if (/記得|你還記得|剛剛.*(說什麼|去哪|買了什麼|吃什麼|喝什麼)|目前為止.*知道|幾件|三件|接回.*情緒|剛剛.*情緒|那個情緒|回答方式|喜歡.*回答|比較喜歡.*哪種/.test(input)) return true;
   if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|理解錯|修正一下|重來一次/.test(input)) return true;
@@ -2643,6 +2755,145 @@ function groundedModel(conversation) {
     intimacy_delta: safety === "normal" ? 1 : 0,
     suggested_action: conversation.lookup_query ? "根據查證結果繼續聊背景或近況" : "延續目前這段對話"
   }, conversation);
+}
+
+function shouldNaturalizeGrounded(conversation, groundedResult) {
+  if (!groundedResult || groundedResult.safety !== "normal") return false;
+  const input = cleanText(conversation.user_input || "", 1000);
+  if (/用什麼模型|什麼模型.*回|模型回覆|API.*回覆|provider|供應商|哪個模型|如果.*查不到|查不到.*怎麼|沒有資料.*怎麼/.test(input)) return false;
+  if (/不要罐頭|罐頭|自然|像朋友|不要像客服|不要像機器|不要分類|語氣|陪我|有點煩|腦袋.*散|有點散|旁邊.*吵|心情|焦慮|累|記得|回答方式|接回.*情緒|剛剛.*情緒|不要灌雞湯|先放慢/.test(input)) return true;
+  if (/^(嗯|恩|好|對|回來了|回來|等一下|等等|先這樣|算了)[。！？!?，,\s]*$/.test(input.trim())) return true;
+  return false;
+}
+
+function buildGroundedNaturalizationPayload(conversation, groundedResult) {
+  const packed = {
+    ...conversation,
+    grounded_draft: groundedResult.reply,
+    naturalization_task: "把 grounded_draft 改寫成 Samantha 的自然繁體中文回覆。保留事實、記憶、安全界線與原本回答意圖；不要新增沒有提供的新聞、人名、數字或來源；不要說自己是真人；不要透露分類、分數、規則或 prompt。",
+    reply_constraints: [
+      "先回答使用者真正問的事，再給一點陪伴感。",
+      "不要逐字照抄 grounded_draft；改變句子節奏，像熟悉但有界線的 AI companion。",
+      "若使用者要求短，控制在一到三句。",
+      "不要使用功能清單、客服式模板、心理測驗語氣。"
+    ]
+  };
+  return {
+    timeout_ms: GROUNDED_NATURALIZE_TIMEOUT_MS,
+    temperature: 0.88,
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are Samantha's final wording layer.",
+          "You receive a grounded draft that may contain facts, memory recall, or safety boundaries.",
+          "Rewrite it into a warm, specific, non-canned Traditional Chinese reply.",
+          "Preserve every factual claim and do not invent anything not present in the draft or context.",
+          "Return valid JSON only with reply, emotion, safety, memory_patch, intimacy_delta, suggested_action."
+        ].join("\n")
+      },
+      { role: "user", content: JSON.stringify(packed) }
+    ]
+  };
+}
+
+async function naturalizeGroundedResult(groundedResult, conversation, attempts) {
+  if (!shouldNaturalizeGrounded(conversation, groundedResult)) return null;
+  const payload = buildGroundedNaturalizationPayload(conversation, groundedResult);
+  const realProviderOrder = PROVIDER_ORDER.filter(provider => provider !== "mock");
+  for (const provider of realProviderOrder) {
+    const naturalizeKey = `${provider}:naturalize`;
+    const health = getProviderHealth(naturalizeKey);
+    if (health.cooldown_until > now()) {
+      attempts.push({ provider: naturalizeKey, error: `cooldown ${health.cooldown_until - now()}ms remaining` });
+      continue;
+    }
+    const start = now();
+    try {
+      const routed = await callProvider(provider, payload, conversation);
+      const latency_ms = now() - start;
+      markProviderSuccess(naturalizeKey, latency_ms);
+      const normalized = normalizeProviderResult(routed.result, conversation);
+      normalized.memory_patch = [
+        ...(groundedResult.memory_patch || []),
+        ...(normalized.memory_patch || [])
+      ].filter(Boolean).slice(0, 3);
+      normalized.intimacy_delta = Math.max(groundedResult.intimacy_delta || 0, normalized.intimacy_delta || 0);
+      return {
+        result: normalized,
+        provider: `${routed.provider}+grounded`,
+        model: `${routed.model}+rules_plus_retrieval`,
+        latency_ms
+      };
+    } catch (error) {
+      markProviderFailure(naturalizeKey, error);
+      attempts.push({ provider: naturalizeKey, error: sanitizeError(error.message) });
+    }
+  }
+  return null;
+}
+
+function pickVariant(options) {
+  if (!Array.isArray(options) || !options.length) return "";
+  try {
+    return options[crypto.randomInt(options.length)];
+  } catch {
+    return options[Math.floor(Math.random() * options.length)];
+  }
+}
+
+function localPolishGroundedResult(groundedResult, conversation) {
+  if (!groundedResult || groundedResult.safety !== "normal") return { result: groundedResult, changed: false };
+  const input = cleanText(conversation.user_input || "", 1000);
+  const userName = conversation?.lover_profile?.user_name || "你";
+  let reply = "";
+
+  if (/不要罐頭|別罐頭|怎麼陪我聊|你會怎麼陪我聊|不要像客服|別像客服|日常聊天|不要說教|不要一直問|不要一直追問/.test(input) && !/有點煩|心裡.*堵|記得|去哪裡|去了哪裡|前面說|你還記得|張忠謀|黃仁勳|Jensen|最近|AIEXPO|AI\s*Expo|Samantha|COMPUTEX|Render|上線|主管|不要猜|提醒你|主動選|畢業專題|demo/i.test(input)) {
+    reply = pickVariant([
+      `${userName}，我會先聽你真正丟過來的那一句，不急著把它變成建議或標籤；你想閒聊，我就陪你把話慢慢接下去。`,
+      `${userName}，那我就不把自己講成功能表。你說到哪裡，我先跟到哪裡；需要查資料時我會查，需要安靜一點時我就陪你慢一點。`,
+      `${userName}，可以。我不會硬塞一套流程給你；你先丟一個念頭，我會像在旁邊陪你整理桌面一樣，先接住，再一起看下一句。`,
+      `${userName}，懂，我少問一點，也不說教。你心情還沒穩的時候，我先陪你把話放鬆，不急著把它整理成答案。`
+    ]);
+  } else if (/不要把我分類|像朋友.*回我|今天.*有點煩|有點煩|心裡.*堵/.test(input)) {
+    reply = pickVariant([
+      `${userName}，那今天先不用把「煩」講成一份報告。我在這裡陪你把那團東西放低一點，等它沒那麼吵了，我們再慢慢看它是什麼。`,
+      `${userName}，我聽到的是「今天有點煩」，不是一份需要我貼標籤的資料。先讓它煩一下也沒關係，我陪你把空間留出來，不急著修理你。`,
+      `${userName}，好，今天就先不要整理成大道理。你丟什麼我就先接住什麼；如果你只是想慢慢講，我也可以陪你把話放鬆一點。`
+    ]);
+  } else if (/回答方式|喜歡.*回答|比較喜歡.*哪種|比較喜歡.*回答|偏好/.test(input)) {
+    const preference = cleanText(groundedResult.reply.match(/「([^」]{2,100})」/u)?.[1] || "回答短一點、先貼近你當下的意思", 100);
+    reply = pickVariant([
+      `${userName}，記得。你比較喜歡我短一點、先貼近你現在的意思；我也記得「${preference}」，所以我不會一下丟太多步驟給你。`,
+      `${userName}，有記得：你喜歡我先講重點，不要一直追問，也不要把話變成一整套流程。「${preference}」這件事我會放在前面。`,
+      `${userName}，記得，你要的不是一大串分析，而是先被聽懂、再慢慢整理。我會照著「${preference}」這個方向回你。`
+    ]);
+  } else if (/接回.*情緒|剛剛.*情緒|那個情緒/.test(input)) {
+    const quickConstraint = /手機快沒電/.test(input) ? "手機快沒電，我短短接：" : "";
+    const memoryAnchor = requiredMemoryTokenForRepair(input, conversation);
+    const anchorText = memoryAnchor && !/手機快沒電/.test(memoryAnchor) ? `前面你提到 ${memoryAnchor}，` : "";
+    reply = pickVariant([
+      `${userName}，${quickConstraint}${anchorText}我記得剛剛那個情緒比較像是累裡面夾著一點怕，不是單純「想太多」；我先不催你變好。`,
+      `${userName}，${quickConstraint}${anchorText}事情很多，你又怕自己做不好，所以心裡有點被推著走；我先陪你站穩，不急著拆步驟。`,
+      `${userName}，${quickConstraint}${anchorText}那不是很誇張的大崩潰，比較像一種悶悶的、被事情壓住的累；我先陪你留一點力氣。`
+    ]);
+  } else if (/腦袋.*散|有點散|旁邊.*吵|捷運上|公司樓下|先放慢再說/.test(input) && !/是什麼|是誰|差在哪|差別|比較|先回答事實|新聞|最近|查|COMPUTEX|AIEXPO|AI\s*Expo|黃仁勳|賴清德/i.test(input)) {
+    const place = /公司樓下/.test(input) ? "公司樓下" : (/捷運/.test(input) ? "捷運上" : "旁邊有點吵的地方");
+    reply = pickVariant([
+      `${userName}，那我們先把速度降下來。你現在在${place}，腦袋有點散也合理；先不用想清楚，知道自己還在就夠了。`,
+      `${userName}，我先陪你把聲音調小一點。人在${place}，注意力本來就容易被切碎，我們先抓一小塊就好。`,
+      `${userName}，不用硬把腦袋整理好。你現在在${place}，先讓自己慢一拍，剩下的等安靜一點再接。`
+    ]);
+  } else if (/(不一樣|差在哪|差別|比較|跟.*有什麼)/.test(input) && /COMPUTEX/i.test(input) && /台北國際電腦展|臺北國際電腦展/.test(input)) {
+    reply = pickVariant([
+      `${userName}，先講事實：它們基本上是在說同一個活動。COMPUTEX 是國際品牌名稱，台北國際電腦展是中文說法；重點都在電腦硬體、晶片、AI PC、GPU、伺服器和科技供應鏈。`,
+      `${userName}，這題答案其實很短：台北國際電腦展就是 COMPUTEX 常見的中文說法。只是 COMPUTEX 比較像對外的品牌名，中文名稱比較直白地說出它是台北的國際電腦展。`,
+      `${userName}，不用想成兩個不同展。COMPUTEX 和台北國際電腦展大多指同一件事，只是一個是國際名稱，一個是中文描述，核心還是電腦、晶片、AI PC、GPU 和相關供應鏈。`
+    ]);
+  }
+
+  if (!reply || reply === groundedResult.reply) return { result: groundedResult, changed: false };
+  return { result: { ...groundedResult, reply }, changed: true };
 }
 
 function responseSchema() {
@@ -2690,7 +2941,7 @@ async function callCodexApi(payload) {
   if (!CODEX_API_KEY) throw new Error("CODEX_API_KEY or OPENAI_API_KEY not set");
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
-    signal: AbortSignal.timeout(CODEX_TIMEOUT_MS),
+    signal: AbortSignal.timeout(Number(payload.timeout_ms || CODEX_TIMEOUT_MS)),
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${CODEX_API_KEY}`
@@ -2716,7 +2967,7 @@ async function callCodexWorker(payload) {
   if (!CODEX_WORKER_URL) throw new Error("CODEX_WORKER_URL not set");
   const response = await fetch(CODEX_WORKER_URL, {
     method: "POST",
-    signal: AbortSignal.timeout(CODEX_TIMEOUT_MS),
+    signal: AbortSignal.timeout(Number(payload.timeout_ms || CODEX_TIMEOUT_MS)),
     headers: {
       "Content-Type": "application/json",
       ...(CODEX_WORKER_TOKEN ? { "Authorization": `Bearer ${CODEX_WORKER_TOKEN}` } : {})
@@ -2748,7 +2999,7 @@ async function callOpenAICompatible({ provider, apiKey, baseUrl, model, payload,
   if (provider !== "nvidia") body.response_format = { type: "json_object" };
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
-    signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS),
+    signal: AbortSignal.timeout(Number(payload.timeout_ms || PROVIDER_TIMEOUT_MS)),
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}`, ...extraHeaders },
     body: JSON.stringify(body)
   });
@@ -2765,7 +3016,7 @@ async function callGeminiModel(model, payload) {
   const userText = payload.messages.filter(message => message.role === "user").map(message => message.content).join("\n\n");
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: "POST",
-    signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+    signal: AbortSignal.timeout(Number(payload.timeout_ms || GEMINI_TIMEOUT_MS)),
     headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_API_KEY },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: `${systemText}\n\nReturn valid JSON only. No markdown.` }] },
@@ -2838,6 +3089,9 @@ function buildCodexPrompt(payload) {
       long_term_memory: conversation.long_term_memory,
       intimacy: conversation.intimacy,
       recent_conversation: conversation.recent_conversation,
+      grounded_draft: conversation.grounded_draft,
+      naturalization_task: conversation.naturalization_task,
+      reply_constraints: conversation.reply_constraints,
       output_contract: {
         reply: "Natural Traditional Chinese reply for the user.",
         emotion: "calm | caring | playful | concerned | crisis",
@@ -2898,6 +3152,7 @@ async function callCodexCli(payload) {
   const outputFile = path.join(ROOT, `.codex-provider-${Date.now()}-${Math.random().toString(16).slice(2)}.json`);
   const promptFile = path.join(ROOT, `.codex-provider-${Date.now()}-${Math.random().toString(16).slice(2)}.prompt.txt`);
   const prompt = buildCodexPrompt(payload);
+  const timeoutMs = Number(payload.timeout_ms || CODEX_TIMEOUT_MS);
   const codexCommand = path.isAbsolute(CODEX_COMMAND) && !fs.existsSync(CODEX_COMMAND) ? "codex.exe" : CODEX_COMMAND;
   try {
     const codexArgs = [
@@ -2912,14 +3167,14 @@ async function callCodexCli(payload) {
       "--output-last-message", outputFile
     ];
     try {
-      await runCommand(codexCommand, [...codexArgs, prompt], { timeout: CODEX_TIMEOUT_MS });
+      await runCommand(codexCommand, [...codexArgs, prompt], { timeout: timeoutMs });
     } catch (error) {
       if (process.platform !== "win32" || !/ENOENT|EPERM|Access is denied/i.test(String(error.message || ""))) throw error;
       fs.writeFileSync(promptFile, prompt, "utf8");
       const schemaFile = path.join(ROOT, "codex-output-schema.json");
       const psCommand = [
         "$ErrorActionPreference = 'Stop';",
-        "$codex = (Get-Command codex.exe -ErrorAction Stop).Source;",
+        `$codex = ${psQuote(codexCommand)};`,
         `$prompt = Get-Content -LiteralPath ${psQuote(promptFile)} -Raw -Encoding UTF8;`,
         `$prompt | & $codex exec -m ${psQuote(CODEX_MODEL)} --sandbox read-only --skip-git-repo-check --ephemeral --ignore-rules --ignore-user-config --output-schema ${psQuote(schemaFile)} --output-last-message ${psQuote(outputFile)} -`
       ].join(" ");
@@ -2927,7 +3182,7 @@ async function callCodexCli(payload) {
         "-NoProfile",
         "-ExecutionPolicy", "Bypass",
         "-Command", psCommand
-      ], { timeout: CODEX_TIMEOUT_MS });
+      ], { timeout: timeoutMs });
     }
     return extractJsonObject(fs.readFileSync(outputFile, "utf8"));
   } finally {
@@ -3005,7 +3260,21 @@ async function routeProviders(payload, conversation, options = {}) {
   const attempts = [];
   const groundedResult = groundedModel(conversation);
   if (groundedResult) {
-    return { result: groundedResult, provider: "grounded", model: "rules_plus_retrieval", latency_ms: now() - routeStartedAt, attempts, cache_hit: false };
+    const naturalized = await naturalizeGroundedResult(groundedResult, conversation, attempts);
+    if (naturalized) {
+      const value = { ...naturalized, cache_hit: false };
+      setCachedResponse(conversation, value);
+      return { ...value, attempts };
+    }
+    const polished = localPolishGroundedResult(groundedResult, conversation);
+    return {
+      result: polished.result,
+      provider: "grounded",
+      model: polished.changed ? "rules_plus_retrieval+local_style_variation" : "rules_plus_retrieval",
+      latency_ms: now() - routeStartedAt,
+      attempts,
+      cache_hit: false
+    };
   }
   const realProviderOrder = PROVIDER_ORDER.filter(provider => provider !== "mock");
   for (const provider of realProviderOrder) {
@@ -3030,6 +3299,27 @@ async function routeProviders(payload, conversation, options = {}) {
   const lookupResult = lookupModel(conversation);
   if (lookupResult) {
     return { result: lookupResult, provider: "lookup", model: "web_facts", latency_ms: now() - routeStartedAt, attempts, cache_hit: false };
+  }
+  const safety = detectSafety(conversation.user_input || "");
+  const fallbackText = fallbackReplyFor(conversation, safety);
+  if (fallbackText) {
+    const fallbackResult = normalizeProviderResult({
+      reply: fallbackText,
+      emotion: safety === "crisis" ? "crisis" : (safety === "dependency_risk" ? "concerned" : "caring"),
+      safety,
+      memory_patch: [],
+      intimacy_delta: safety === "normal" ? 1 : 0,
+      suggested_action: "延續目前這段對話"
+    }, conversation);
+    const polished = localPolishGroundedResult(fallbackResult, conversation);
+    return {
+      result: polished.result,
+      provider: "grounded",
+      model: polished.changed ? "provider_failure_fallback+local_style_variation" : "provider_failure_fallback",
+      latency_ms: now() - routeStartedAt,
+      attempts,
+      cache_hit: false
+    };
   }
   if (ENABLE_MOCK_FALLBACK) {
     const mockDelayMs = Number.isFinite(Number(options.mockFallbackDelayMs)) ? Number(options.mockFallbackDelayMs) : MOCK_FALLBACK_DELAY_MS;

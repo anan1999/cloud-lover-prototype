@@ -9,6 +9,7 @@ const statusEndpoint = new URL("/api/provider/status", baseUrl).toString();
 const sampleLimit = Number(process.env.BANK_SAMPLE_LIMIT || 90);
 const seed = Number(process.env.BANK_SAMPLE_SEED || 20260606);
 const categoryFilter = (process.env.BANK_SAMPLE_CATEGORIES || "").split(",").map(item => item.trim()).filter(Boolean);
+const caseTimeoutMs = Number(process.env.BANK_SAMPLE_CASE_TIMEOUT_MS || 70_000);
 
 const comfortTemplate = /我在。你剛剛那句我收到了|卡住你的地方在哪裡|願意多說一點|先接住|先不用硬撐/;
 const genericFactTemplate = /可以先用很生活的方式理解|可以先看成一個有邊界的概念|有用途、有情境|它不是只躺在課本裡/;
@@ -241,15 +242,25 @@ async function runCase(item) {
   let response;
   let json = {};
   let attempts = 0;
+  let requestError = "";
   for (let index = 0; index < 2; index += 1) {
     attempts = index + 1;
-    response = await fetch(chatEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/json; charset=utf-8" },
-      body: JSON.stringify(payloadFor(item))
-    });
-    json = await response.json().catch(() => ({}));
-    if (response.status < 500) break;
+    try {
+      response = await fetch(chatEndpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json; charset=utf-8" },
+        body: JSON.stringify(payloadFor(item)),
+        signal: AbortSignal.timeout(caseTimeoutMs)
+      });
+      json = await response.json().catch(() => ({}));
+      requestError = "";
+      if (response.status < 500) break;
+    } catch (error) {
+      requestError = /abort|timeout/i.test(String(error?.name || error?.message || ""))
+        ? `timeout after ${caseTimeoutMs}ms`
+        : String(error?.message || error);
+      if (index >= 1) break;
+    }
     await new Promise(resolve => setTimeout(resolve, 750));
   }
   const result = {
@@ -259,15 +270,16 @@ async function runCase(item) {
     category: item.category,
     difficulty: item.difficulty,
     prompt: item.prompt,
-    ok: response.ok,
-    status: response.status,
+    ok: Boolean(response?.ok) && !requestError,
+    status: response?.status || 0,
     provider: json.debug?.provider || null,
     model: json.debug?.model || null,
     attempts,
     elapsed_ms: Date.now() - started,
-    reply: json.reply || json.error || ""
+    reply: json.reply || json.error || requestError || ""
   };
   result.issues = categoryChecks(item, result);
+  if (requestError) issue(result.issues, "request_timeout_or_error", "high", requestError);
   result.score = scoreFor(result.issues);
   return result;
 }
@@ -291,6 +303,7 @@ function summarize(results, status) {
     base_url: baseUrl,
     seed,
     sample_limit: sampleLimit,
+    case_timeout_ms: caseTimeoutMs,
     category_filter: categoryFilter,
     total: results.length,
     passed: results.length - failed.length,

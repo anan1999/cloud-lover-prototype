@@ -10,7 +10,7 @@ Recommended production routing:
 Gemini -> Codex
 ```
 
-Mock is disabled for production quality. If Gemini and Codex both fail or time out, the API returns an unavailable error instead of pretending to answer.
+Mock is disabled for production quality. If Gemini and Codex both fail or time out, Samantha uses a non-mock grounded fallback for safe, memory-aware, or factual scaffolding instead of pretending that an LLM succeeded.
 
 ## Local Development
 
@@ -74,8 +74,11 @@ For broader coverage, sample the 10,000-question bank:
 ```powershell
 $env:BANK_SAMPLE_URL="http://127.0.0.1:8787"
 $env:BANK_SAMPLE_LIMIT="90"
+$env:BANK_SAMPLE_CASE_TIMEOUT_MS="8000"
 npm run eval:sample
 ```
+
+`BANK_SAMPLE_CASE_TIMEOUT_MS` keeps the evaluator honest: a slow or stuck round becomes a visible failed case instead of hanging the whole test run.
 
 ## Product Architecture
 
@@ -83,6 +86,8 @@ npm run eval:sample
 - Backend: `server.js` static server, auth, chat API, memory manager, emotion detector, prompt builder, provider router, and admin APIs.
 - Data: Neon Postgres in production, local JSON fallback in development.
 - Docs: see [docs/architecture.md](./docs/architecture.md), [docs/prompt_design.md](./docs/prompt_design.md), and [docs/safety_guidelines.md](./docs/safety_guidelines.md).
+
+Reply routing is intentionally layered, so not every answer is pure Google LLM output. Open-ended chat goes through Gemini first and Codex second. Safety, memory recall, fact repair, and known regression cases first build a grounded draft from retrieval/rules; when a provider is available, Gemini or Codex naturalizes that draft into a warmer Samantha voice. If providers are unavailable, Samantha can still use local style variation on the grounded draft. This keeps mock disabled while avoiding stale canned replies.
 
 Conversation modes:
 
@@ -125,12 +130,14 @@ GEMINI_MODELS=gemini-2.5-flash,gemini-2.0-flash,gemini-2.0-flash-lite,gemini-fla
 CODEX_BACKEND=api
 CODEX_API_KEY=...
 CODEX_MODEL=gpt-5.5
+CODEX_COMMAND=
 CODEX_TIMEOUT_MS=60000
 CODEX_WORKER_URL=
 CODEX_WORKER_TOKEN=
 
 PROVIDER_TIMEOUT_MS=60000
 GEMINI_TIMEOUT_MS=12000
+GROUNDED_NATURALIZE_TIMEOUT_MS=1500
 MOCK_FALLBACK_DELAY_MS=60000
 CACHE_TTL_MS=120000
 PROVIDER_COOLDOWN_MS=60000
@@ -150,7 +157,7 @@ BODY_LIMIT_BYTES=65536
 - Keep `EXPOSE_DEBUG=0` and `ENABLE_PROVIDER_STATUS=0` in production.
 - Use `Gemini -> Codex` in production. Gemini gets a short fast-path timeout; Codex can wait up to one minute. Keep mock disabled for quality testing and real users.
 - Keep `ENABLE_EXPERIMENTAL_PROVIDERS=0` unless you intentionally test old third-party providers. This prevents stale OpenRouter/NVIDIA keys from entering the route.
-- Use `CODEX_BACKEND=api` or a warm `CODEX_WORKER_URL` for fast production fallback. `CODEX_BACKEND=cli` is useful locally, but every request starts a Codex process and is much slower.
+- Use `CODEX_BACKEND=api` or a warm `CODEX_WORKER_URL` for fast production fallback. `CODEX_BACKEND=cli` is useful locally, but every request starts a Codex process and is much slower. On Windows, the server auto-detects the real Codex binary under `%LOCALAPPDATA%\OpenAI\Codex\bin`; set `CODEX_COMMAND` only if you need to override it.
 - Set spend caps and rate limits in provider dashboards.
 - Review `privacy.html`, `terms.html`, and `safety.html` before inviting users.
 
