@@ -57,6 +57,20 @@ When `voice_mode` is true, `response_plan` asks Samantha to:
 
 Text mode keeps the existing behavior.
 
+## Voice Lab Test Bot
+
+The admin dashboard includes a Voice Lab test bot for evaluating spoken interaction before adding real audio providers.
+
+Voice Lab:
+
+- runs a scripted audio-transcript conversation through the existing evaluation API
+- sends `voice_mode: true`, `input_channel: "voice"`, and `output_channel: "voice"`
+- scores voice-specific issues such as replies that are too long, too many spoken sentences, markdown lists, and code blocks
+- stores the evaluation as a normal dashboard run
+- can play the latest evaluation transcript aloud with browser `speechSynthesis`
+
+Voice Lab does not upload, decode, or store audio files yet. It is a no-new-account test harness for voice conversation quality.
+
 ## Privacy Notes
 
 - Raw audio is not stored.

@@ -96,6 +96,18 @@
     .eval-panel h2 { margin: 0; }
     .issue-hotspots { display: flex; flex-wrap: wrap; gap: 8px; }
     .recommendation-list, .example-list { display: grid; gap: 8px; }
+    .voice-lab-console {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px dashed var(--line);
+      background: rgba(68,214,201,.055);
+    }
+    .voice-lab-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .voice-lab-controls label { display: inline-flex; grid-template-columns: none; align-items: center; gap: 8px; }
+    .voice-lab-controls input[type="checkbox"] { width: 18px; min-height: 18px; accent-color: var(--teal); }
+    .voice-lab-controls input[type="number"] { width: 86px; }
     .rec-item, .example-item {
       display: grid;
       gap: 5px;
@@ -247,6 +259,28 @@
           <button class="primary" id="runScriptedBtn">跑固定劇本</button>
           <button class="ghost" id="runLlmBtn">跑 LLM 測試官</button>
         </div>
+        <div class="voice-lab-console" style="margin-top:14px;">
+          <div class="section-head">
+            <div>
+              <h2>Voice Lab 音檔測試機器人</h2>
+              <p class="muted">用語音 transcript 腳本跑 voice payload，並可用瀏覽器朗讀逐輪對話；本階段不儲存原始音檔。</p>
+            </div>
+            <span class="pill" id="voiceLabPill">voice_mode ready</span>
+          </div>
+          <div class="voice-lab-controls">
+            <button class="primary" id="runVoiceLabBtn">跑 Voice Lab</button>
+            <button class="ghost" id="playVoiceLabBtn">播放最新測試</button>
+            <button class="ghost" id="stopVoiceLabBtn">停止播放</button>
+            <label>
+              <input id="voiceBotSpeak" type="checkbox">
+              跑完自動播放
+            </label>
+            <label>播放則數
+              <input id="voiceBotSpeakLimit" type="number" min="2" max="40" value="10">
+            </label>
+          </div>
+          <p class="muted" id="voiceLabStatus">瀏覽器麥克風權限仍由使用者端控制；這裡只測 transcript 與朗讀品質。</p>
+        </div>
         <div class="grid three" id="evalMetrics" style="margin-top:14px;"></div>
         <div class="grid two" style="margin-top:14px;">
           <div class="eval-panel">
@@ -378,13 +412,17 @@
     </section>
   </main>
 
+  <script src="voice-utils.js"></script>
   <script>
     const $ = selector => document.querySelector(selector);
     const fmt = value => new Intl.DateTimeFormat("zh-TW", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
     const num = value => Number(value || 0).toLocaleString();
     const escapeHtml = text => String(text ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[char]);
     let evaluationScenarios = {};
+    let latestEvaluationMessages = [];
     let lastTokenData = null;
+    let voiceLabPlaybackCancelled = false;
+    const voiceUtils = window.SamanthaVoiceUtils || { cleanSpeechText: text => String(text || ""), chooseVoice: voices => (voices || [])[0] || null };
 
     async function request(path, options = {}) {
       const response = await fetch(path, {
@@ -600,6 +638,7 @@
 
     function renderEvaluationDashboard(data) {
       evaluationScenarios = data.scenarios || evaluationScenarios;
+      latestEvaluationMessages = data.latest_messages || [];
       const options = Object.entries(evaluationScenarios).map(([key, item]) => `<option value="${escapeHtml(key)}">${escapeHtml(item.label || key)}</option>`).join("");
       if (options && !$("#evalScenario").options.length) {
         $("#evalScenario").innerHTML = options;
@@ -613,7 +652,7 @@
         ["測試輪數", Number(latest.turns || 0).toLocaleString()],
         ["高風險問題", Number(latest.metrics?.high_issues || 0).toLocaleString()],
         ["平均延遲", `${Number(latest.metrics?.avg_latency_ms || 0).toLocaleString()} ms`],
-        ["模式", latest.mode === "llm" ? "LLM 測試官" : "固定劇本"],
+        ["模式", latest.metrics?.voice_mode ? "Voice Lab" : (latest.mode === "llm" ? "LLM 測試官" : "固定劇本")],
         ["場景", evaluationScenarios[latest.scenario]?.label || latest.scenario],
         ["路由", routeLabel(latest.metrics?.provider_mode || (latest.metrics?.skip_naturalize ? "grounded" : "gemini_codex"))]
       ] : [
@@ -629,6 +668,15 @@
         metrics.push(["測試 Tokens", num(latest.metrics.token_usage.total_tokens)]);
         metrics.push(["測試 API Tokens", num(latest.metrics.token_usage.billable_tokens)]);
       }
+      if (latest?.metrics?.voice_mode) {
+        const voiceIssues = (latest.metrics.top_issues || [])
+          .filter(item => String(item.code || "").startsWith("voice_"))
+          .reduce((sum, item) => sum + Number(item.count || 0), 0);
+        metrics.push(["Voice mode", `<span class="pill good">on</span>`]);
+        metrics.push(["Voice issues", num(voiceIssues)]);
+      }
+      $("#voiceLabPill").textContent = latest?.metrics?.voice_mode ? `最近 Voice Lab ${latest.score} 分` : "voice_mode ready";
+      $("#voiceLabPill").className = `pill ${latest?.metrics?.voice_mode ? (latest.score >= 85 ? "good" : "warn") : ""}`;
       if (latest?.metrics?.routing) {
         const routing = latest.metrics.routing;
         metrics.push(["真實 LLM", `${num(routing.real_llm_messages)} / ${num(routing.turns)}<small>${num(routing.real_llm_ratio)}%</small>`]);
@@ -661,7 +709,7 @@
       $("#evalRunRows").innerHTML = (data.runs || []).map(item => `
         <tr>
           <td>${fmt(item.created_at)}</td>
-          <td>${item.mode === "llm" ? "LLM" : "固定"}</td>
+          <td>${item.metrics?.voice_mode ? "Voice" : (item.mode === "llm" ? "LLM" : "固定")}</td>
           <td>${escapeHtml(evaluationScenarios[item.scenario]?.label || item.scenario)}</td>
           <td><span class="score ${scoreClass(item.score)}" style="font-size:20px;">${Number(item.score || 0)}</span></td>
           <td>${issuePills(item.issues)}</td>
@@ -690,29 +738,91 @@
       $("#evalTurns").value = String(Math.max(30, Math.min(Number($("#evalTurns").value || 100), 240)));
     }
 
-    async function runEvaluation(mode) {
-      const scenario = $("#evalScenario").value || "core";
+    function stopVoiceLabPlayback(message = "已停止播放 Voice Lab。") {
+      voiceLabPlaybackCancelled = true;
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+      $("#voiceLabStatus").textContent = message;
+    }
+
+    function speakVoiceLabLine(text) {
+      return new Promise(resolve => {
+        if (voiceLabPlaybackCancelled) return resolve();
+        if (!window.speechSynthesis || !window.SpeechSynthesisUtterance) {
+          $("#voiceLabStatus").textContent = "這個瀏覽器不支援內建朗讀；仍可看逐輪文字。";
+          return resolve();
+        }
+        const cleaned = voiceUtils.cleanSpeechText(text);
+        if (!cleaned) return resolve();
+        const utterance = new SpeechSynthesisUtterance(cleaned);
+        utterance.lang = "zh-TW";
+        utterance.rate = 0.98;
+        utterance.pitch = 1;
+        const voice = voiceUtils.chooseVoice(window.speechSynthesis.getVoices(), "zh-TW");
+        if (voice) utterance.voice = voice;
+        utterance.onend = resolve;
+        utterance.onerror = resolve;
+        window.speechSynthesis.speak(utterance);
+      });
+    }
+
+    async function playLatestVoiceLab() {
+      const limit = Math.max(2, Math.min(Number($("#voiceBotSpeakLimit").value || 10), 40));
+      const rows = latestEvaluationMessages.slice(0, limit);
+      if (!rows.length) {
+        $("#voiceLabStatus").textContent = "目前沒有可播放的測試對話；請先跑一次 Voice Lab。";
+        return;
+      }
+      stopVoiceLabPlayback("準備播放 Voice Lab...");
+      voiceLabPlaybackCancelled = false;
+      for (const [index, item] of rows.entries()) {
+        if (voiceLabPlaybackCancelled) break;
+        const speaker = item.role === "assistant" ? "Samantha" : "測試者";
+        $("#voiceLabStatus").textContent = `播放 ${index + 1} / ${rows.length}：${speaker}`;
+        await speakVoiceLabLine(`${speaker}：${item.content}`);
+        await new Promise(resolve => setTimeout(resolve, 180));
+      }
+      if (!voiceLabPlaybackCancelled) $("#voiceLabStatus").textContent = "Voice Lab 播放完成。";
+    }
+
+    async function runEvaluation(mode, options = {}) {
+      const scenario = options.scenario || $("#evalScenario").value || "core";
       const turns = Math.max(30, Math.min(Number($("#evalTurns").value || 100), 240));
       const providerMode = $("#evalProviderMode").value || "grounded";
       const interTurnDelayMs = Math.max(0, Math.min(Number($("#evalDelayMs").value || 0), 60000));
+      const voiceMode = Boolean(options.voiceMode || scenario === "voice_lab");
       $("#runScriptedBtn").disabled = true;
       $("#runLlmBtn").disabled = true;
-      $("#evalStatus").textContent = mode === "llm"
-        ? `LLM 測試官正在和 Samantha 對話...（${routeLabel(providerMode)}）`
-        : `固定劇本正在測試 Samantha...（${routeLabel(providerMode)}）`;
+      $("#runVoiceLabBtn").disabled = true;
+      $("#evalStatus").textContent = voiceMode
+        ? `Voice Lab 正在用語音 transcript 測試 Samantha...（${routeLabel(providerMode)}）`
+        : (mode === "llm"
+          ? `LLM 測試官正在和 Samantha 對話...（${routeLabel(providerMode)}）`
+          : `固定劇本正在測試 Samantha...（${routeLabel(providerMode)}）`);
+      if (voiceMode) $("#voiceLabStatus").textContent = "Voice Lab 測試中：使用 voice payload，不上傳音檔。";
       try {
         const data = await request("/api/admin/evaluations/run", {
           method: "POST",
-          body: JSON.stringify({ mode, scenario, turns, provider_mode: providerMode, inter_turn_delay_ms: interTurnDelayMs })
+          body: JSON.stringify({ mode, scenario, turns, provider_mode: providerMode, inter_turn_delay_ms: interTurnDelayMs, voice_mode: voiceMode })
         });
         renderEvaluationDashboard(data.dashboard || data);
         $("#evalStatus").textContent = `完成：${data.run.summary}`;
+        if (voiceMode) {
+          $("#voiceLabStatus").textContent = `Voice Lab 完成：${data.run.summary}`;
+          if ($("#voiceBotSpeak").checked) await playLatestVoiceLab();
+        }
       } catch (error) {
         $("#evalStatus").textContent = `測試失敗：${error.message}`;
+        if (voiceMode) $("#voiceLabStatus").textContent = `Voice Lab 失敗：${error.message}`;
       } finally {
         $("#runScriptedBtn").disabled = false;
         $("#runLlmBtn").disabled = false;
+        $("#runVoiceLabBtn").disabled = false;
       }
+    }
+
+    async function runVoiceLab() {
+      if (evaluationScenarios.voice_lab) $("#evalScenario").value = "voice_lab";
+      await runEvaluation("scripted", { scenario: "voice_lab", voiceMode: true });
     }
 
     function renderTables(data) {
@@ -807,6 +917,9 @@
     $("#logoutBtn").addEventListener("click", logout);
     $("#runScriptedBtn").addEventListener("click", () => runEvaluation("scripted"));
     $("#runLlmBtn").addEventListener("click", () => runEvaluation("llm"));
+    $("#runVoiceLabBtn").addEventListener("click", runVoiceLab);
+    $("#playVoiceLabBtn").addEventListener("click", playLatestVoiceLab);
+    $("#stopVoiceLabBtn").addEventListener("click", () => stopVoiceLabPlayback());
     $("#evalScenario").addEventListener("change", syncEvaluationTurns);
     $("#evalProviderMode").addEventListener("change", syncProviderDelay);
     loadStats().catch(error => {

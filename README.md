@@ -119,6 +119,7 @@ Voice-lite MVP:
 - Voice settings live in `localStorage`: `enable_voice_reply`, `voice_rate`, `voice_pitch`, and `preferred_voice_lang`.
 - Chat payloads include `input_channel`, `output_channel`, `voice_mode`, and `voice_session` metadata.
 - Raw audio is not stored; only the final transcript is sent as a normal user message.
+- Admin dashboard includes Voice Lab, a transcript-based voice test bot that scores spoken reply length, markdown/list leakage, and playback quality with browser TTS.
 - More details: [docs/voice-lite.md](docs/voice-lite.md).
 
 Task model routing design:

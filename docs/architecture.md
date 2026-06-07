@@ -136,6 +136,8 @@ The MVP now implements optional browser-native voice without adding a provider a
 
 The frontend uses `SpeechRecognition` / `webkitSpeechRecognition` for speech-to-text when available and `speechSynthesis` for text-to-speech. Text remains the default path. No raw audio is stored; only the final transcript is sent to the existing chat API. When `voice_mode` is true, `response_plan` asks Samantha for shorter, more conversational spoken replies with less markdown.
 
+The admin dashboard also includes `voice_lab`, a transcript-based voice test bot. It runs the normal evaluation pipeline with `voice_mode: true`, stores results in `evaluation_runs` / `evaluation_messages`, and can play the latest transcript aloud in the browser. This gives spoken quality feedback without introducing a real audio upload or STT/TTS provider yet.
+
 Legacy column names such as `lover_name` are intentionally retained to avoid breaking deployed data. In product logic they mean Samantha companion name and familiarity context.
 
 ## Deployment

@@ -4,6 +4,7 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const indexHtml = fs.readFileSync(path.join(root, "index.html"), "utf8");
+const adminHtml = fs.readFileSync(path.join(root, "admin.html"), "utf8");
 const serverJs = fs.readFileSync(path.join(root, "server.js"), "utf8");
 const voiceUtilsSource = fs.readFileSync(path.join(root, "voice-utils.js"), "utf8");
 const voiceUtils = require(path.join(root, "voice-utils.js"));
@@ -71,9 +72,18 @@ function run() {
 
   assertIncludes(serverJs, "short_spoken_reply", "server.js");
   assertIncludes(serverJs, "voice_telemetry", "server.js");
+  assertIncludes(serverJs, "EVALUATION_SCENARIOS.voice_lab", "server.js");
+  assertIncludes(serverJs, "voice_reply_too_long", "server.js");
+  assertIncludes(serverJs, "voice_mode: Boolean(voiceMode)", "server.js");
   assertIncludes(serverJs, "Voice mode: avoid markdown", "server.js");
   assertIncludes(serverJs, "conversation.voice_mode =", "server.js");
   assertIncludes(serverJs, "1 到 3 句自然口語", "server.js");
+
+  assertIncludes(adminHtml, "id=\"runVoiceLabBtn\"", "admin.html");
+  assertIncludes(adminHtml, "id=\"playVoiceLabBtn\"", "admin.html");
+  assertIncludes(adminHtml, "playLatestVoiceLab", "admin.html");
+  assertIncludes(adminHtml, "speechSynthesis", "admin.html");
+  assertIncludes(adminHtml, "voice_mode: voiceMode", "admin.html");
 
   assertNotIncludes(indexHtml, "MediaRecorder", "index.html");
   assertNotIncludes(indexHtml, "raw_audio", "index.html");

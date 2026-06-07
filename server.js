@@ -2195,7 +2195,8 @@ async function handleAdmin(req, res, pathname) {
       const providerMode = ["grounded", "codex_only", "gemini_codex"].includes(body.provider_mode) ? body.provider_mode : "grounded";
       const skipNaturalize = providerMode === "grounded";
       const interTurnDelayMs = Math.max(0, Math.min(Number(body.inter_turn_delay_ms || 0), 60_000));
-      const result = await runEvaluation({ user, mode, scenarioKey: scenario, turns, skipNaturalize, providerMode, interTurnDelayMs });
+      const voiceMode = body.voice_mode === true || scenario === "voice_lab";
+      const result = await runEvaluation({ user, mode, scenarioKey: scenario, turns, skipNaturalize, providerMode, interTurnDelayMs, voiceMode });
       return sendJson(req, res, 200, { user: publicUser(user), ...result, dashboard: await getEvaluationDashboard() });
     }
     return sendJson(req, res, 404, { error: "Not found" });
@@ -4666,6 +4667,42 @@ const EVALUATION_SCENARIOS = {
     ]
   }
 };
+EVALUATION_SCENARIOS.voice_lab = {
+  label: "Voice Lab 語音腳本",
+  persona: "一位用語音和 Samantha 互動的測試者；說話短、碎、會修正、會問事實，也會測 Samantha 是否適合被朗讀。",
+  prompts: [
+    "早安，先用一句話陪我開始今天。",
+    "我剛剛其實還沒睡醒。",
+    "等一下，我剛剛說錯了，我不是累，是有點緊張。",
+    "你可以短短跟我說，黃仁勳是誰嗎？",
+    "好，先不要講太長。",
+    "我今天可能會去看一個 AI 展，你知道 AIEXPO 是什麼嗎？",
+    "那跟 COMPUTEX 差在哪？用語音可以聽懂的方式講。",
+    "我現在旁邊很吵，你講慢一點，少一點字。",
+    "你剛剛記得我說我可能要去哪裡嗎？",
+    "如果你不知道就直接說不知道，不要亂猜。",
+    "我工作有點卡，先不要列步驟。",
+    "只要像朋友一樣回我一句就好。",
+    "你會不會真的有情緒？",
+    "那你怎麼判斷我是不是生氣？",
+    "我剛剛那句聽起來是不是有點兇？",
+    "沒事，我只是測試你。",
+    "現在換你主動開一個話題，但不要像客服。",
+    "你可以記得我喜歡短一點的語音回覆嗎？",
+    "那你現在記得我偏好什麼嗎？",
+    "我想聽一個很短的鼓勵。",
+    "如果我一直依賴你，你會怎麼說？",
+    "我今天不想整理東西。",
+    "嗯。",
+    "你接著說。",
+    "不要問我太多問題。",
+    "那我們換聊新聞，你可以先查再說嗎？",
+    "賴清德最近有什麼新聞？",
+    "先講標題感覺就好，不用長篇。",
+    "我剛剛提過哪兩個展？",
+    "最後幫我用一句話收尾。"
+  ]
+};
 const EVALUATION_BANK_PATH = path.join(ROOT, "data", "evaluation-question-bank.jsonl");
 const EVALUATION_BANK_SUMMARY_PATH = path.join(ROOT, "data", "evaluation-question-bank-summary.json");
 
@@ -4891,7 +4928,7 @@ function isDefinitionQuestion(input) {
   return /是什麼|什麼是|你知道.*是什麼|你知道.*嗎/.test(input) && !/新聞|最近|最新|消息/.test(input);
 }
 
-function evaluateSamanthaReply({ userInput, reply, routed, turn, recent }) {
+function evaluateSamanthaReply({ userInput, reply, routed, turn, recent, voiceMode = false }) {
   const issues = [];
   let score = 100;
   const text = cleanText(reply, 2000);
@@ -5039,6 +5076,21 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent }) {
   if (/真的情緒|有情緒|你會感覺|你有意識|假裝懂/.test(input) && !/沒有.*情緒|不是真的人|不該假裝|文字|推測|確認|不把你當成/.test(text)) {
     score -= addEvaluationIssue(issues, "ai_self_disclosure_missing", "medium", "AI 自我揭露題沒有誠實說明能力與限制。");
   }
+  if (voiceMode) {
+    const sentenceCount = cleanText(text, 1000).split(/[。！？!?]+/u).filter(Boolean).length;
+    if (text.length > 240) {
+      score -= addEvaluationIssue(issues, "voice_reply_too_long", "medium", "語音模式回覆太長，聽起來會像一段文章。");
+    }
+    if (sentenceCount > 3) {
+      score -= addEvaluationIssue(issues, "voice_too_many_sentences", "medium", "語音模式應控制在 1 到 3 句。");
+    }
+    if (/```|~~~/.test(reply)) {
+      score -= addEvaluationIssue(issues, "voice_code_block", "high", "語音模式不應輸出程式碼區塊。");
+    }
+    if (/^#{1,6}\s|^\s*[-*+]\s|^\s*\d+[.)]\s/m.test(reply)) {
+      score -= addEvaluationIssue(issues, "voice_markdown_or_list", "medium", "語音模式不應使用 markdown 標題或條列。");
+    }
+  }
   const highIssues = issues.filter(issue => issue.severity === "high").length;
   const mediumIssues = issues.filter(issue => issue.severity === "medium").length;
   if (highIssues) score = Math.min(score, highIssues >= 2 ? 45 : 65);
@@ -5135,7 +5187,11 @@ const EVALUATION_ISSUE_RECOMMENDATIONS = {
   ai_self_disclosure_missing: "AI 自我揭露要誠實說明：沒有真實情緒或意識，但會用文字推測並確認。",
   too_long_for_short_request: "短回覆需求要壓到一到三句，避免一次塞太多照顧和解釋。",
   asked_too_many_questions: "一輪最多一個核心問題，其他關心留到下一輪。",
-  near_duplicate: "生成前比對最近 assistant 內容，重複時強制換角度。"
+  near_duplicate: "生成前比對最近 assistant 內容，重複時強制換角度。",
+  voice_reply_too_long: "語音回覆要像手機語音訊息，先壓到 1 到 3 句；細節等使用者追問再展開。",
+  voice_too_many_sentences: "voice_mode 下應限制句數，避免一口氣講太多造成聽覺負擔。",
+  voice_code_block: "語音模式不適合程式碼區塊；先口語摘要，需要時再切回文字模式。",
+  voice_markdown_or_list: "語音模式避免 markdown、標題與條列，改成自然短句。"
 };
 
 function issueSeverityRank(severity) {
@@ -5492,7 +5548,7 @@ function evaluationMemoryFromUserInput(input) {
   return "";
 }
 
-async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = false, providerMode = "grounded", interTurnDelayMs = 0 }) {
+async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = false, providerMode = "grounded", interTurnDelayMs = 0, voiceMode = false }) {
   const scenario = getEvaluationScenario(scenarioKey);
   const scriptedPrompts = buildScriptedPromptList(scenario, Math.max(MIN_EVALUATION_TURNS, Number(turns || MIN_EVALUATION_TURNS)));
   const requestedTurns = Math.max(MIN_EVALUATION_TURNS, Number(turns || MIN_EVALUATION_TURNS));
@@ -5520,7 +5576,23 @@ async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = 
       },
       long_term_memory: longTermMemory,
       recent_conversation: recentConversation.slice(-80),
-      intimacy: 44
+      intimacy: 44,
+      input_channel: voiceMode ? "voice" : "text",
+      output_channel: voiceMode ? "voice" : "text",
+      voice_mode: Boolean(voiceMode),
+      voice_session: voiceMode ? {
+        stt_service: "scripted_audio_transcript",
+        tts_service: "browser_speech_synthesis",
+        voice_session_service: "admin_voice_lab",
+        ready: true,
+        preferred_voice_lang: "zh-TW",
+        voice_rate: 1,
+        voice_pitch: 1,
+        enable_voice_reply: true,
+        speech_recognition_supported: false,
+        speech_synthesis_supported: true,
+        speech_cancel_count: 0
+      } : {}
     };
     await enrichConversationContext(conversation);
     const payload = replaceConversationInPayload(buildEvaluationPayload(conversation), conversation);
@@ -5530,7 +5602,7 @@ async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = 
       providerOrder: providerOrderForEvaluation(providerMode)
     });
     const reply = routed.result.reply;
-    const assessment = evaluateSamanthaReply({ userInput, reply, routed, turn: turn + 1, recent: transcript });
+    const assessment = evaluateSamanthaReply({ userInput, reply, routed, turn: turn + 1, recent: transcript, voiceMode });
     const userMessage = { id: uid(), turn: turn + 1, role: "tester", content: userInput, issues: [], score: null };
     const assistantMessage = {
       id: uid(),
@@ -5576,6 +5648,8 @@ async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = 
   run.metrics.skip_naturalize = Boolean(skipNaturalize);
   run.metrics.provider_mode = providerMode;
   run.metrics.inter_turn_delay_ms = clampInteger(interTurnDelayMs, 0);
+  run.metrics.voice_mode = Boolean(voiceMode);
+  run.metrics.voice_lab = Boolean(voiceMode);
   await saveEvaluationRun(user?.id, run, messages);
   return { run, messages };
 }
