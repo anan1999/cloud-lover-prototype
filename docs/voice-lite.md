@@ -65,7 +65,9 @@ Voice Lab:
 
 - runs a scripted audio-transcript conversation through the existing evaluation API
 - sends `voice_mode: true`, `input_channel: "voice"`, and `output_channel: "voice"`
-- scores voice-specific issues such as replies that are too long, too many spoken sentences, markdown lists, and code blocks
+- forces Codex-only provider routing for formal voice-quality tests
+- disables mock fallback and skips response cache, so a failed provider is visible instead of being hidden by a canned reply
+- scores voice-specific issues such as replies that are too long, too many spoken sentences, markdown lists, code blocks, template tone, and report-like tone
 - stores the evaluation as a normal dashboard run
 - can play the latest evaluation transcript aloud with browser `speechSynthesis`
 

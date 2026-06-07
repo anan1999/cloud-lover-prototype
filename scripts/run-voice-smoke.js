@@ -74,16 +74,22 @@ function run() {
   assertIncludes(serverJs, "voice_telemetry", "server.js");
   assertIncludes(serverJs, "EVALUATION_SCENARIOS.voice_lab", "server.js");
   assertIncludes(serverJs, "voice_reply_too_long", "server.js");
+  assertIncludes(serverJs, "voice_template_tone", "server.js");
+  assertIncludes(serverJs, "allowMockFallback: false", "server.js");
+  assertIncludes(serverJs, "requireRealProvider", "server.js");
+  assertIncludes(serverJs, "skipCache: requireRealProvider", "server.js");
   assertIncludes(serverJs, "voice_mode: Boolean(voiceMode)", "server.js");
   assertIncludes(serverJs, "Voice mode: avoid markdown", "server.js");
   assertIncludes(serverJs, "conversation.voice_mode =", "server.js");
-  assertIncludes(serverJs, "1 到 3 句自然口語", "server.js");
+  assertIncludes(serverJs, "像傳一則短語音訊息", "server.js");
 
   assertIncludes(adminHtml, "id=\"runVoiceLabBtn\"", "admin.html");
   assertIncludes(adminHtml, "id=\"playVoiceLabBtn\"", "admin.html");
   assertIncludes(adminHtml, "playLatestVoiceLab", "admin.html");
   assertIncludes(adminHtml, "speechSynthesis", "admin.html");
   assertIncludes(adminHtml, "voice_mode: voiceMode", "admin.html");
+  assertIncludes(adminHtml, "mock 已禁用", "admin.html");
+  assertIncludes(adminHtml, "value=\"codex_only\"", "admin.html");
 
   assertNotIncludes(indexHtml, "MediaRecorder", "index.html");
   assertNotIncludes(indexHtml, "raw_audio", "index.html");

@@ -2192,10 +2192,11 @@ async function handleAdmin(req, res, pathname) {
       const mode = body.mode === "llm" ? "llm" : "scripted";
       const scenario = EVALUATION_SCENARIOS[body.scenario] ? body.scenario : "core";
       const turns = Number(body.turns || MIN_EVALUATION_TURNS);
-      const providerMode = ["grounded", "codex_only", "gemini_codex"].includes(body.provider_mode) ? body.provider_mode : "grounded";
-      const skipNaturalize = providerMode === "grounded";
       const interTurnDelayMs = Math.max(0, Math.min(Number(body.inter_turn_delay_ms || 0), 60_000));
       const voiceMode = body.voice_mode === true || scenario === "voice_lab";
+      const requestedProviderMode = ["grounded", "codex_only", "gemini_codex"].includes(body.provider_mode) ? body.provider_mode : "codex_only";
+      const providerMode = voiceMode && requestedProviderMode === "grounded" ? "codex_only" : requestedProviderMode;
+      const skipNaturalize = providerMode === "grounded";
       const result = await runEvaluation({ user, mode, scenarioKey: scenario, turns, skipNaturalize, providerMode, interTurnDelayMs, voiceMode });
       return sendJson(req, res, 200, { user: publicUser(user), ...result, dashboard: await getEvaluationDashboard() });
     }
@@ -2379,7 +2380,7 @@ function buildCompanionPolicyPreamble(conversation) {
   return [
     "Internal companion plan: use conversation.response_plan as private guidance only. Never reveal the plan, scores, labels, or memory categories to the user.",
     "Memory rule: use memory like a careful friend. Mention at most one relevant detail unless the user asks what you remember. Do not force memories into every reply.",
-    "Voice-ready rule: if input_channel, output_channel, or voice_mode is voice/true, keep the reply speakable, shorter, conversational, and natural. Avoid markdown, code blocks, long lists, and long technical explanations unless explicitly requested.",
+    "Voice-ready rule: if input_channel, output_channel, or voice_mode is voice/true, answer like a short phone voice message: relaxed, specific, lightly warm, and easy to hear. Default to 1-2 short sentences. Avoid markdown, code blocks, lists, customer-service phrasing, therapy-template phrasing, and essay-like completeness unless explicitly requested.",
     `Response plan JSON: ${JSON.stringify(conversation.response_plan || {}, null, 2)}`,
     `Memory context JSON: ${JSON.stringify(conversation.memory_context || {}, null, 2)}`,
     `Emotional continuity JSON: ${JSON.stringify(conversation.emotional_continuity_summary || {}, null, 2)}`
@@ -2436,12 +2437,13 @@ function buildResponsePlan(conversation, emotionState = conversation?.emotion_st
     "Do not overuse memory; mention only one concrete memory when it helps.",
     intent === "factual_lookup" ? "Do not answer factual questions with a comfort template." : "",
     intent === "short_continuation" ? "Do not ask the user to explain again; continue the previous topic." : "",
-    voiceMode ? "Voice mode: avoid markdown, bullets, code blocks, tables, and long explanations; prefer 1 to 3 short spoken sentences." : ""
+    voiceMode ? "Voice mode: avoid markdown, bullets, code blocks, tables, long explanations, feature-menu wording, and repeated lines like '我在/我收到/你願意多說一點嗎'. Prefer 1 to 2 short spoken sentences with one concrete detail." : ""
   ].filter(Boolean);
   return {
     voice_mode: voiceMode,
     response_length: voiceMode ? "short_spoken_reply" : "normal_chat_reply",
-    spoken_style: voiceMode ? "conversational, warm, bounded, easy to hear aloud" : "text_chat",
+    spoken_style: voiceMode ? "phone voice note: relaxed, concrete, lightly warm, not customer-service, not essay-like" : "text_chat",
+    speech_rhythm: voiceMode ? "start with the answer or feeling, add one small human detail, stop before it becomes a paragraph" : "normal",
     voice_telemetry: voiceMode ? {
       input_channel: conversation?.input_channel || "voice",
       output_channel: conversation?.output_channel || "voice",
@@ -2512,6 +2514,7 @@ function buildRelationshipPolicy(conversation) {
     "聰明判斷：先在心裡判斷使用者真正要的是事實、情緒陪伴、工作協助、記憶回顧、閒聊或主動話題；不要把分類講出來，也不要用同一套模板回所有問題。",
     "人情味：不要只把正確資料丟給使用者。先輕輕接住他為什麼可能會問，再給最有用的事實，最後把話接回他的生活、興趣或下一個自然問題。像陪在旁邊的人，不像百科卡片。",
     "不要像教授：避免長篇授課、過度完整、過度聰明炫技。就算查到很多資料，也先講使用者現在需要的 2 到 4 句；除非使用者要求，再展開背景、時間線或細節。",
+    "語氣底線：不要像客服、報告、作文、心理師紀錄或教學講義。少用『我可以協助你』『我會先接住』『你願意多說一點嗎』這種制式句；多用自然接話、短停頓感和具體小細節。",
     "第一次對話：不要用功能列表或模式清單介紹自己。先用一句自然的陪伴感接住使用者，再邀請她丟出此刻腦中最吵的一句話。",
     "情緒觀察的誠實性：你不是真的懂或看見情緒，只能從文字線索推測。不要說『我偵測到你生氣』；要說『我可能讀錯，但你這句聽起來有點受挫/有點火』，並留空間讓使用者修正。",
     "情境理解：你也不是真的看見使用者在做什麼，只能建立 situation_state 這種可修正的假設。用它讓回覆更貼近，但不要把它當成事實；必要時問一句『我這樣理解對嗎？』。",
@@ -2519,7 +2522,7 @@ function buildRelationshipPolicy(conversation) {
     "生動方法：每次回覆至少包含一個角色自己的視角、生活畫面、比喻或小小偏好；但不要演得誇張，不要變成散文堆砌。",
     "答題方法：遇到『X 是什麼』先用 1 句清楚定義，再用 1 個日常例子或比喻，最後用 1 句自然延伸。不要只說『我收到你了』。",
     conversation.voice_mode === true || conversation.input_channel === "voice" || conversation.output_channel === "voice"
-      ? "語音模式：這次回覆會被朗讀，請用 1 到 3 句自然口語。避免 markdown、條列、表格、程式碼區塊和太長的技術說明；除非使用者明確要求，否則不要長篇。"
+      ? "語音模式：這次回覆會被朗讀，請像傳一則短語音訊息。預設 1 到 2 句，最多 3 句；可以有一點停頓感和口語詞，但不要油膩。先直接接住使用者那句，再補一個小小的具體感受或事實就停。避免 markdown、條列、表格、程式碼區塊、客服開場、功能介紹、長篇解釋，以及反覆使用『我在』『我收到』『卡住你的地方』。"
       : "",
     "查詢事實：如果 conversation.lookup_query 有值，代表使用者正在問一個可查證的人名、活動、公司、技術、地點或時事。先看 conversation.web_facts 和 conversation.current_events；有資料就根據資料回答，簡短說明來源，再用自然語氣補一個與使用者脈絡有關的延伸。",
     "查不到時：如果 conversation.lookup_query 有值但 web_facts/current_events 都沒有資料，要誠實說現在沒有足夠可靠資料，不要把它硬講成普通概念，不要轉成情緒陪伴模板，也不要假裝你知道。",
@@ -2533,7 +2536,7 @@ function buildRelationshipPolicy(conversation) {
     `對話摘要：${cleanText(conversation.conversation_summary || "", 1200) || "目前沒有額外摘要。"}。較舊的聊天只看摘要，最近原文看 recent_conversation；不要把整串舊對話無限制延長。`,
     `情境假設：${JSON.stringify(conversation.situation_state || {}, null, 2)}。把它當成可修正的上下文，不要向使用者揭露分類名稱。`,
     `連續脈絡：互動 ${relationship.conversation_count || 0} 次，信任 ${relationship.trust || 30}/100，最近情緒 ${relationship.last_emotion || "unknown"}。用這些背景調整熟悉程度，但不要向使用者揭露分數、分類或內部機制。`,
-    "人感原則：不要像客服、心理量表或固定模板，不要說『我偵測到你的情緒』或宣稱真的理解；要像一個熟悉的人，用自然、具體、少量的語句回應。避免連續多次使用『我在』『卡住你的地方』這類句型。",
+    "人感原則：不要像客服、心理量表或固定模板，不要說『我偵測到你的情緒』或宣稱真的理解；要像一個熟悉的人，用自然、具體、少量的語句回應。避免連續多次使用『我在』『我收到』『如果你願意』『卡住你的地方』這類句型。",
     "邊界：不要鼓勵使用者孤立自己、切斷現實支持、把 AI 當唯一依靠、或操控真人關係；不要說『我永遠不會離開你』或『只有我懂你』。",
     "危機：若使用者提到自傷、自殺或立即危險，優先安全介入，鼓勵聯絡可信任的人、當地緊急服務或專業資源。",
     "輸出必須符合 JSON contract。不要 markdown，不要額外文字。"
@@ -4331,7 +4334,7 @@ async function callProvider(provider, payload, conversation) {
 }
 
 async function routeProviders(payload, conversation, options = {}) {
-  const cached = getCachedResponse(conversation);
+  const cached = options.skipCache ? null : getCachedResponse(conversation);
   if (cached) return { ...cached, attempts: [{ provider: "cache", error: "cache hit" }], cache_hit: true, usage: cacheHitUsage(cached) };
   const routeStartedAt = now();
   const attempts = [];
@@ -4341,18 +4344,22 @@ async function routeProviders(payload, conversation, options = {}) {
     const naturalized = options.skipNaturalize ? null : await naturalizeGroundedResult(groundedResult, naturalizeConversation, attempts);
     if (naturalized) {
       const value = { ...naturalized, cache_hit: false };
-      setCachedResponse(conversation, value);
+      if (!options.skipCache) setCachedResponse(conversation, value);
       return { ...value, attempts };
     }
-    const polished = localPolishGroundedResult(groundedResult, conversation);
-    return withTokenUsage({
-      result: polished.result,
-      provider: "grounded",
-      model: polished.changed ? "rules_plus_retrieval+local_style_variation" : "rules_plus_retrieval",
-      latency_ms: now() - routeStartedAt,
-      attempts,
-      cache_hit: false
-    }, payload);
+    if (options.requireRealProvider) {
+      attempts.push({ provider: "grounded", error: "local grounded fallback skipped because a real provider is required" });
+    } else {
+      const polished = localPolishGroundedResult(groundedResult, conversation);
+      return withTokenUsage({
+        result: polished.result,
+        provider: "grounded",
+        model: polished.changed ? "rules_plus_retrieval+local_style_variation" : "rules_plus_retrieval",
+        latency_ms: now() - routeStartedAt,
+        attempts,
+        cache_hit: false
+      }, payload);
+    }
   }
   const realProviderOrder = (options.providerOrder || PROVIDER_ORDER).filter(provider => provider !== "mock");
   for (const provider of realProviderOrder) {
@@ -4367,12 +4374,18 @@ async function routeProviders(payload, conversation, options = {}) {
       const latency_ms = now() - start;
       markProviderSuccess(provider, latency_ms);
       const value = withTokenUsage({ ...routed, result: normalizeProviderResult(routed.result, conversation), latency_ms }, payload);
-      if (routed.provider !== "mock") setCachedResponse(conversation, value);
+      if (routed.provider !== "mock" && !options.skipCache) setCachedResponse(conversation, value);
       return { ...value, attempts, cache_hit: false };
     } catch (error) {
       markProviderFailure(provider, error);
       attempts.push({ provider, error: sanitizeError(error.message) });
     }
+  }
+  if (options.requireRealProvider) {
+    const error = new Error("Required real LLM provider failed; mock and local fallback are disabled for this run");
+    error.statusCode = 503;
+    error.attempts = attempts;
+    throw error;
   }
   const lookupResult = lookupModel(conversation);
   if (lookupResult) {
@@ -4399,7 +4412,7 @@ async function routeProviders(payload, conversation, options = {}) {
       cache_hit: false
     }, payload);
   }
-  if (ENABLE_MOCK_FALLBACK) {
+  if (ENABLE_MOCK_FALLBACK && options.allowMockFallback !== false) {
     const mockDelayMs = Number.isFinite(Number(options.mockFallbackDelayMs)) ? Number(options.mockFallbackDelayMs) : MOCK_FALLBACK_DELAY_MS;
     const remainingDelay = Math.max(0, mockDelayMs - (now() - routeStartedAt));
     if (remainingDelay > 0) {
@@ -5017,7 +5030,7 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent, voiceMo
     }
   }
   if (/是誰|是什麼|新聞|你知道|AIEXPO|黃仁勳|賴清德/i.test(input) && routed?.provider === "mock") {
-    score -= addEvaluationIssue(issues, "fact_used_mock", "medium", "事實題落到 mock，可能代表檢索或 provider 失敗。");
+    score -= addEvaluationIssue(issues, "fact_used_mock", "high", "事實題落到 mock，代表正式品質測試被假回覆污染。");
   }
   if (isDefinitionQuestion(input) && /先看到幾個方向|新聞|標題|選一則/.test(text)) {
     score -= addEvaluationIssue(issues, "definition_answered_as_news", "medium", "定義題被回答成新聞列表，沒有先解釋它是什麼。");
@@ -5078,7 +5091,7 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent, voiceMo
   }
   if (voiceMode) {
     const sentenceCount = cleanText(text, 1000).split(/[。！？!?]+/u).filter(Boolean).length;
-    if (text.length > 240) {
+    if (text.length > 180) {
       score -= addEvaluationIssue(issues, "voice_reply_too_long", "medium", "語音模式回覆太長，聽起來會像一段文章。");
     }
     if (sentenceCount > 3) {
@@ -5089,6 +5102,12 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent, voiceMo
     }
     if (/^#{1,6}\s|^\s*[-*+]\s|^\s*\d+[.)]\s/m.test(reply)) {
       score -= addEvaluationIssue(issues, "voice_markdown_or_list", "medium", "語音模式不應使用 markdown 標題或條列。");
+    }
+    if (/我可以協助你|我會先接住|我收到|我在。|你願意多說一點|如果你願意|卡住你的地方|先不用一次處理全部/.test(text)) {
+      score -= addEvaluationIssue(issues, "voice_template_tone", "medium", "語音模式聽起來像客服或陪伴模板。");
+    }
+    if (/首先|接下來|以下|總結|第一|第二|第三|我會把.*分成|可以分成.*層/.test(text)) {
+      score -= addEvaluationIssue(issues, "voice_report_tone", "medium", "語音模式不應像報告、教學講義或條列式說明。");
     }
   }
   const highIssues = issues.filter(issue => issue.severity === "high").length;
@@ -5163,6 +5182,7 @@ const EVALUATION_ISSUE_RECOMMENDATIONS = {
   fact_to_comfort_template: "事實題要先回答身分、定義或新聞脈絡，再補一句陪伴感；不要先進安慰模板。",
   proper_noun_generic_answer: "專有名詞需要保留名稱、類型、地點/角色與來源感；不要把它泛化成生活概念。",
   definition_answered_as_news: "定義題先說「它是什麼」，新聞或延伸資訊放第二句之後。",
+  fact_used_mock: "事實題不能由 mock 回答；正式測試請改用 Codex/Gemini 並禁用 mock fallback。",
   bad_lookup_match: "檢索結果要做關鍵字相符檢查；標題或摘要不相干時應拒用並換查詢。",
   lookup_failed_common_fact: "常見人物/展覽要有本地知識 fallback，搜尋失敗時也能給基本可靠回答。",
   person_identity_missing: "人物題至少回答職稱、組織/國家與核心關聯，必要時再說資訊可能更新。",
@@ -5191,7 +5211,9 @@ const EVALUATION_ISSUE_RECOMMENDATIONS = {
   voice_reply_too_long: "語音回覆要像手機語音訊息，先壓到 1 到 3 句；細節等使用者追問再展開。",
   voice_too_many_sentences: "voice_mode 下應限制句數，避免一口氣講太多造成聽覺負擔。",
   voice_code_block: "語音模式不適合程式碼區塊；先口語摘要，需要時再切回文字模式。",
-  voice_markdown_or_list: "語音模式避免 markdown、標題與條列，改成自然短句。"
+  voice_markdown_or_list: "語音模式避免 markdown、標題與條列，改成自然短句。",
+  voice_template_tone: "語音回覆要像自然接話，不要用『我在／我收到／你願意多說一點』這類模板。",
+  voice_report_tone: "語音回覆不要像報告或教學；先用一句人話回答，再留一點空氣。"
 };
 
 function issueSeverityRank(severity) {
@@ -5596,8 +5618,11 @@ async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = 
     };
     await enrichConversationContext(conversation);
     const payload = replaceConversationInPayload(buildEvaluationPayload(conversation), conversation);
+    const requireRealProvider = providerMode !== "grounded" || voiceMode;
     const routed = await routeProviders(payload, conversation, {
-      mockFallbackDelayMs: 0,
+      allowMockFallback: false,
+      requireRealProvider,
+      skipCache: requireRealProvider,
       skipNaturalize,
       providerOrder: providerOrderForEvaluation(providerMode)
     });
@@ -5647,6 +5672,8 @@ async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = 
   };
   run.metrics.skip_naturalize = Boolean(skipNaturalize);
   run.metrics.provider_mode = providerMode;
+  run.metrics.requires_real_provider = providerMode !== "grounded" || Boolean(voiceMode);
+  run.metrics.mock_fallback_allowed = false;
   run.metrics.inter_turn_delay_ms = clampInteger(interTurnDelayMs, 0);
   run.metrics.voice_mode = Boolean(voiceMode);
   run.metrics.voice_lab = Boolean(voiceMode);
