@@ -93,6 +93,8 @@ Before provider routing, the backend builds a private `response_plan`:
 - detected emotion
 - emotion intensity
 - user intent
+- conversation action
+- tone intelligence plan
 - conversation mode
 - relevant memories
 - response strategy
@@ -103,6 +105,8 @@ Before provider routing, the backend builds a private `response_plan`:
 - what to avoid
 
 This is not shown to the user. It is prompt guidance that keeps Samantha from answering factual questions with comfort templates, overusing memory, or turning every message into a feature menu.
+
+The `tone_intelligence` layer chooses a concrete conversation action before generation, such as `answer_directly`, `soft_acknowledge`, `continue_topic`, `repair_misunderstanding`, `recall_memory`, `ground_with_fact`, `small_practical_step`, `proactive_topic`, or `stop_and_leave_space`. After a provider returns, the backend applies a lightweight tone self-check that removes common customer-service phrasing, report tone, markdown leakage in voice mode, and overlong spoken replies. Evaluation metrics include `action_fit_score` so the dashboard can show whether Samantha picked the right conversational move, not only whether the answer was warm.
 
 ## Memory Management
 

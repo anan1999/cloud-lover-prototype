@@ -54,6 +54,7 @@ When `voice_mode` is true, `response_plan` asks Samantha to:
 - avoid code blocks and long lists
 - keep warmth and boundaries
 - keep long technical explanations only when the user asks for them
+- follow `tone_intelligence.conversation_action` so voice replies answer, repair, remember, continue, or leave space instead of falling into one template
 
 Text mode keeps the existing behavior.
 

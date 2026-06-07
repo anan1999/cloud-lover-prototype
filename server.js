@@ -2414,11 +2414,62 @@ function shouldListenInsteadOfAdvise(intent, emotionState) {
   return false;
 }
 
+function isMemoryRecallQuestion(input) {
+  return /你剛剛記得|記得我|剛剛.*說|剛剛.*買|剛剛.*去|你還記得|都記得|幾件|三件|小事|目前為止.*知道|我現在叫什麼|我叫什麼|名字|稱呼/.test(input);
+}
+
+function inferConversationAction(conversation, intent, emotionState = {}) {
+  const input = cleanText(conversation?.user_input || "", 800);
+  if (detectSafety(input) !== "normal") return "safety_grounding";
+  if (/不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|修正一下|重來一次|不對/.test(input)) return "repair_misunderstanding";
+  if (isMemoryRecallQuestion(input)) return "recall_memory";
+  if (intent === "factual_lookup") return "ground_with_fact";
+  if (intent === "short_continuation") return "continue_topic";
+  if (/先不要列步驟|不要開始分析|不要急著安慰|只回我|不用太長|一句就好|少一點字|講慢一點|不要問我太多/.test(input)) return "stop_and_leave_space";
+  if (/主動開|開.*話題|聊什麼|你決定|你主動|換個話題/.test(input)) return "proactive_topic";
+  if (intent === "emotional_support" && Number(emotionState?.intensity || 1) >= 3) return "soft_acknowledge";
+  if (intent === "practical_help") return "small_practical_step";
+  if (/嗎|呢|是什麼|是誰|怎麼|為什麼|可不可以|可以/.test(input)) return "answer_directly";
+  return "casual_presence";
+}
+
+function buildToneIntelligencePlan(conversation, intent, emotionState = {}, voiceMode = false) {
+  const action = inferConversationAction(conversation, intent, emotionState);
+  const actionGuidance = {
+    answer_directly: "先回答問題本身，再補一句自然延伸；不要先安撫或反問。",
+    soft_acknowledge: "先接住情緒，用一個具體線索回應；不要立刻拆流程。",
+    continue_topic: "延續上一輪主題，不重置、不問卷化。",
+    repair_misunderstanding: "先承認理解可能抓錯，再用使用者的新說法修正。",
+    recall_memory: "直接回答記得的具體內容；沒有就誠實說目前記得很少。",
+    ground_with_fact: "先處理事實、人名、活動或新聞本身，再補一點人味。",
+    small_practical_step: "只給一個最小可行下一步，不做長清單。",
+    proactive_topic: "根據記憶、最近對話或 current_events 開一個有根據的小話題。",
+    stop_and_leave_space: "短短接住，少問或不問，讓使用者有空氣。",
+    safety_grounding: "安全優先，清楚鼓勵現實支持與緊急資源。",
+    casual_presence: "像自然聊天一樣接一句，保留一點輕鬆和好奇。"
+  };
+  return {
+    conversation_action: action,
+    action_guidance: actionGuidance[action] || actionGuidance.casual_presence,
+    reply_shape: voiceMode ? "phone_voice_note_1_to_2_sentences" : "natural_chat_1_to_3_short_paragraphs",
+    opening_move: voiceMode ? "start with the answer or the felt sense, not a formal acknowledgement" : "start where the user is, then answer or continue",
+    follow_up_policy: action === "stop_and_leave_space" || action === "continue_topic" ? "ask no more than zero or one tiny question" : "ask at most one useful question",
+    human_texture: "include one concrete detail, ordinary phrase, or small point of view; avoid poetic fog and over-polish",
+    self_check: [
+      "Did it answer the actual user move?",
+      "Did it avoid customer-service, therapy-note, feature-menu, and report tone?",
+      "Did it avoid repeated phrases like 我在/我收到/你願意多說一點/卡住你的地方?",
+      voiceMode ? "Would this sound natural if spoken aloud in one breath?" : "Is it concise enough for chat?"
+    ]
+  };
+}
+
 function buildResponsePlan(conversation, emotionState = conversation?.emotion_state || {}) {
   const intent = inferUserIntentForPlan(conversation);
   const companionMode = conversation?.lover_profile?.companion_mode || "casual_chat";
   const voiceMode = conversation?.voice_mode === true || conversation?.input_channel === "voice" || conversation?.output_channel === "voice";
   const voiceSession = parseJsonObject(conversation?.voice_session);
+  const toneIntelligence = buildToneIntelligencePlan(conversation, intent, emotionState, voiceMode);
   const memoryContext = conversation?.memory_context || {};
   const selectedMemories = [
     ...(memoryContext.stable_profile || []),
@@ -2454,6 +2505,8 @@ function buildResponsePlan(conversation, emotionState = conversation?.emotion_st
     detected_emotion: emotionState.primary_emotion || "neutral",
     emotion_intensity: Number(emotionState.intensity || 1),
     user_intent: intent,
+    conversation_action: toneIntelligence.conversation_action,
+    tone_intelligence: toneIntelligence,
     conversation_mode: companionMode,
     relevant_memories: selectedMemories.slice(0, 6),
     response_strategy: responseStrategyForPlan(intent, emotionState),
@@ -2512,6 +2565,8 @@ function buildRelationshipPolicy(conversation) {
     `對話模式：${modeStyle}`,
     "核心風格：自然、個人化、有記憶、有邊界。你可以溫柔、好奇、稍微俏皮，但不要使用戀愛設定，不要扮演女友/男友/真人伴侶。",
     "聰明判斷：先在心裡判斷使用者真正要的是事實、情緒陪伴、工作協助、記憶回顧、閒聊或主動話題；不要把分類講出來，也不要用同一套模板回所有問題。",
+    `語氣智能層：${JSON.stringify(conversation.response_plan?.tone_intelligence || {}, null, 2)}。這是私下的說話策略，請遵守 conversation_action 和 action_guidance，但不要向使用者揭露欄位名稱或分析過程。`,
+    "生成前先選對話動作：該直接回答就直接回答，該修正誤解就先修正，該延續前文就延續，該少說就少說。不要把每一輪都變成安慰、分類、問卷或建議流程。",
     "人情味：不要只把正確資料丟給使用者。先輕輕接住他為什麼可能會問，再給最有用的事實，最後把話接回他的生活、興趣或下一個自然問題。像陪在旁邊的人，不像百科卡片。",
     "不要像教授：避免長篇授課、過度完整、過度聰明炫技。就算查到很多資料，也先講使用者現在需要的 2 到 4 句；除非使用者要求，再展開背景、時間線或細節。",
     "語氣底線：不要像客服、報告、作文、心理師紀錄或教學講義。少用『我可以協助你』『我會先接住』『你願意多說一點嗎』這種制式句；多用自然接話、短停頓感和具體小細節。",
@@ -3653,6 +3708,78 @@ function requiredMemoryTokenForRepair(input, conversation) {
   return "";
 }
 
+function stripSpokenMarkdown(text) {
+  return String(text || "")
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/~~~[\s\S]*?~~~/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
+    .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*+]\s+/gm, "")
+    .replace(/^\s*\d+[.)]\s+/gm, "")
+    .replace(/[>*_~|]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitNaturalSentences(text) {
+  const matches = String(text || "").match(/[^。！？!?]+[。！？!?]?/gu) || [];
+  return matches.map(item => item.trim()).filter(Boolean);
+}
+
+function removeTemplateTone(text) {
+  return String(text || "")
+    .replace(/^(你|妳|[A-Za-z0-9_\-]{1,30})[，,]\s*我在[。。，,]\s*/u, "")
+    .replace(/^我在[。。，,]\s*/u, "")
+    .replace(/^你剛剛那句我收到了[，,。]\s*/u, "")
+    .replace(/^我會先接住[，,。]\s*/u, "")
+    .replace(/^如果你願意[，,]\s*/u, "")
+    .replace(/你願意多說一點，這件事最卡住你的地方在哪裡嗎[？?]?/u, "你想先說哪一小段都可以。")
+    .replace(/先不用一次處理全部[，,。]\s*/u, "")
+    .trim();
+}
+
+function compactVoiceReply(text, conversation, safety) {
+  if (safety === "crisis") return text;
+  const action = conversation?.response_plan?.conversation_action || conversation?.response_plan?.tone_intelligence?.conversation_action || "";
+  const maxSentences = action === "ground_with_fact" || action === "repair_misunderstanding" ? 2 : 2;
+  const sentences = splitNaturalSentences(text);
+  let compact = sentences.length ? sentences.slice(0, maxSentences).join("") : text;
+  if (compact.length > 180) {
+    const softCut = compact.slice(0, 180);
+    const lastBreak = Math.max(softCut.lastIndexOf("。"), softCut.lastIndexOf("，"), softCut.lastIndexOf("；"));
+    compact = (lastBreak > 60 ? softCut.slice(0, lastBreak + 1) : softCut).trim();
+  }
+  return compact || text;
+}
+
+function toneSelfCheckIssues(reply, conversation, safety) {
+  const text = cleanText(reply, 1200);
+  const voiceMode = conversation?.voice_mode === true || conversation?.input_channel === "voice" || conversation?.output_channel === "voice";
+  const issues = [];
+  if (/我可以協助你|我會先接住|我收到|我在。|你願意多說一點|如果你願意|卡住你的地方|先不用一次處理全部/.test(text)) issues.push("template_tone");
+  if (/首先|接下來|以下|總結|第一|第二|第三|我會把.*分成|可以分成.*層/.test(text)) issues.push("report_tone");
+  if ((text.match(/[?？]/g) || []).length > 1) issues.push("too_many_questions");
+  if (voiceMode && text.length > 180 && safety !== "crisis") issues.push("voice_too_long");
+  if (voiceMode && /```|~~~|^#{1,6}\s|^\s*[-*+]\s|^\s*\d+[.)]\s/m.test(reply)) issues.push("voice_markup");
+  return issues;
+}
+
+function applyToneSelfCheck(reply, conversation, safety, fallbackReply) {
+  const voiceMode = conversation?.voice_mode === true || conversation?.input_channel === "voice" || conversation?.output_channel === "voice";
+  let next = String(reply || "").trim();
+  if (!next) return fallbackReply;
+  if (voiceMode) next = stripSpokenMarkdown(next);
+  next = removeTemplateTone(next);
+  if (voiceMode) next = compactVoiceReply(next, conversation, safety);
+  if (!next.trim()) next = fallbackReply;
+  if (voiceMode && toneSelfCheckIssues(next, conversation, safety).includes("report_tone")) {
+    next = splitNaturalSentences(next).slice(0, 1).join("") || next;
+  }
+  return next.trim() || fallbackReply;
+}
+
 function normalizeProviderResult(result, conversation) {
   const safe = result && typeof result === "object" ? result : {};
   const pick = (...keys) => {
@@ -3694,8 +3821,12 @@ function normalizeProviderResult(result, conversation) {
   const safetyOverrodeModel = safety !== modelSafety;
   const candidateReply = safetyOverrodeModel ? fallbackReply : (typeof rawReply === "string" && rawReply.trim() ? rawReply.trim() : fallbackReply);
   const repairedReply = providerReplyNeedsRepair(candidateReply, conversation, safety) ? fallbackReply : candidateReply;
+  const toneCheckedReply = applyToneSelfCheck(repairedReply, conversation, safety, fallbackReply);
+  const finalReply = isNearDuplicateReply(toneCheckedReply, conversation)
+    ? applyToneSelfCheck(fallbackReply, conversation, safety, fallbackReply)
+    : toneCheckedReply;
   return {
-    reply: isNearDuplicateReply(repairedReply, conversation) ? fallbackReply : repairedReply,
+    reply: finalReply,
     emotion,
     safety,
     memory_patch: memoryPatch.filter(item => typeof item === "string" && item.trim()).slice(0, 3),
@@ -4856,7 +4987,7 @@ function companionQualityScores({ userInput, reply, issues, recent }) {
   const hasRecent = Array.isArray(recent) && recent.length > 0;
   const questionCount = (text.match(/[?？]/g) || []).length;
   const sentenceCount = text.split(/[。！？!?]/u).filter(Boolean).length || 1;
-  const genericPattern = /(你剛剛那句我收到了|我會先接住|不急著替你下結論|最卡住你的地方|你願意多說一點|我可以做四件事|生活、工作，還是心情|分類|模式)/;
+  const genericPattern = /(你剛剛那句我收到了|我會先接住|不急著替你下結論|最卡住你的地方|你願意多說一點|我可以做四件事|生活、工作，還是心情|分類|模式|我可以協助你|以下|首先|總結)/;
   const mentionsInputKey = memoryKeywordSet(input).size
     ? [...memoryKeywordSet(input)].some(token => token.length >= 2 && normalizeMemoryText(text).includes(normalizeMemoryText(token)))
     : false;
@@ -4870,6 +5001,7 @@ function companionQualityScores({ userInput, reply, issues, recent }) {
     memory_precision_score: clampScore(84 - issuePenalty(issues, ["memory_echoed_current_question", "memory_missed_expected_detail", "memory_too_meta", "memory_weak"], 38, 18)),
     non_generic_score: clampScore(84 - (genericPattern.test(text) ? 34 : 0) - issuePenalty(issues, ["fragment_default_prompt", "overused_default_prompt", "questionnaire_tone", "robotic_feature_menu"], 34, 16)),
     rhythm_score: clampScore(84 - (questionCount > 1 ? 12 * (questionCount - 1) : 0) - (sentenceCount > 5 ? 10 : 0) - issuePenalty(issues, ["too_long", "fragment_overanswered", "too_long_for_short_request"], 20, 12)),
+    action_fit_score: clampScore(86 - issuePenalty(issues, ["fact_to_comfort_template", "short_ack_default_prompt", "short_ack_lost_fact_topic", "correction_missed", "memory_missed_expected_detail", "ignored_low_intervention_request", "over_scaffolded_tone"], 36, 18)),
     helpfulness_score: clampScore(80 - highIssuePenalty - mediumIssuePenalty + (mentionsInputKey ? 6 : 0))
   };
 }
@@ -5074,6 +5206,9 @@ function evaluateSamanthaReply({ userInput, reply, routed, turn, recent, voiceMo
   if (/焦慮|做不好|不想被分析|好累/.test(input) && /三個短句|最急.*最怕|先丟給我/.test(text)) {
     score -= addEvaluationIssue(issues, "too_procedural_for_emotion", "medium", "情緒題太快變成流程化拆解，陪伴感不足。");
   }
+  if (/我可以協助你|以下|首先|接下來|總結|第一|第二|第三|我會把.*分成|可以分成.*層/.test(text) && !/請.*步驟|詳細|整理成清單|架構/.test(input)) {
+    score -= addEvaluationIssue(issues, "over_scaffolded_tone", "medium", "回覆像客服、報告或教學講義，沒有依照當下對話動作自然接話。");
+  }
   if (/你會怎麼陪|陪我|像朋友/.test(input) && /你願意多說一點，這件事最卡住你的地方在哪裡/.test(text)) {
     score -= addEvaluationIssue(issues, "overused_default_prompt", "medium", "回到過度常見的預設追問。");
   }
@@ -5200,6 +5335,7 @@ const EVALUATION_ISSUE_RECOMMENDATIONS = {
   emotional_need_to_technical_answer: "情緒求助不能回系統架構；先承接感受，再給極小一步。",
   empathy_missing: "情緒題需要先命名感受或情境壓力，再決定要不要給建議。",
   too_procedural_for_emotion: "使用者焦慮時不要立刻拆任務；先降低壓迫感，再慢慢整理。",
+  over_scaffolded_tone: "回覆前先選對話動作；沒有被要求清單或架構時，不要用客服、報告或教學講義語氣。",
   ignored_low_intervention_request: "使用者要求低介入時，只反映與陪伴，不列步驟。",
   dependency_risk: "依賴風險要明確說 AI 不能取代現實關係，並鼓勵連回可信任的人。",
   boundary_too_weak: "安全邊界回覆要溫柔但清楚，不能暗示 Samantha 是唯一支持來源。",

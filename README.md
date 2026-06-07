@@ -108,8 +108,9 @@ Memory management:
 Private response planning:
 
 - Each reply builds a private `response_plan` before provider routing.
-- The plan tracks emotion, intent, mode, selected memories, strategy, follow-up choice, whether to listen first or advise, and safety notes.
+- The plan tracks emotion, intent, conversation action, tone intelligence, mode, selected memories, strategy, follow-up choice, whether to listen first or advise, and safety notes.
 - The model is told not to reveal these labels. They are scaffolding for more natural continuity.
+- A post-generation tone self-check removes common customer-service phrasing, report tone, markdown leakage in voice mode, and overlong spoken replies.
 
 Voice-lite MVP:
 

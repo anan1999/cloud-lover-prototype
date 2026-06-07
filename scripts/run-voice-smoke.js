@@ -75,6 +75,10 @@ function run() {
   assertIncludes(serverJs, "EVALUATION_SCENARIOS.voice_lab", "server.js");
   assertIncludes(serverJs, "voice_reply_too_long", "server.js");
   assertIncludes(serverJs, "voice_template_tone", "server.js");
+  assertIncludes(serverJs, "tone_intelligence", "server.js");
+  assertIncludes(serverJs, "conversation_action", "server.js");
+  assertIncludes(serverJs, "applyToneSelfCheck", "server.js");
+  assertIncludes(serverJs, "action_fit_score", "server.js");
   assertIncludes(serverJs, "allowMockFallback: false", "server.js");
   assertIncludes(serverJs, "requireRealProvider", "server.js");
   assertIncludes(serverJs, "skipCache: requireRealProvider", "server.js");
@@ -90,6 +94,7 @@ function run() {
   assertIncludes(adminHtml, "voice_mode: voiceMode", "admin.html");
   assertIncludes(adminHtml, "mock 已禁用", "admin.html");
   assertIncludes(adminHtml, "value=\"codex_only\"", "admin.html");
+  assertIncludes(adminHtml, "Action fit", "admin.html");
 
   assertNotIncludes(indexHtml, "MediaRecorder", "index.html");
   assertNotIncludes(indexHtml, "raw_audio", "index.html");
