@@ -6,7 +6,7 @@ Voice-lite adds optional browser-native voice interaction without any new provid
 
 - Speech-to-text: `SpeechRecognition` or `webkitSpeechRecognition` when the browser supports it.
 - Text-to-speech: `window.speechSynthesis`.
-- Settings: `localStorage` for `enable_voice_reply`, `voice_rate`, `voice_pitch`, `preferred_voice_lang`, and `preferred_voice_name`.
+- Settings: `localStorage` for `enable_voice_reply`, `voice_rate`, `voice_pitch`, `preferred_voice_lang`, `preferred_voice_name`, and `voice_style`.
 - Backend: the existing chat API, provider routing, memory, session, safety, and dashboard paths.
 
 No OpenAI, ElevenLabs, Azure, Google TTS, or other external voice provider is added in this phase.
@@ -47,7 +47,22 @@ Text messages send:
 
 The `voice_session` object also reports browser support and speech cancel count for lightweight telemetry.
 
-`preferred_voice_name` is included for future custom voice providers. In the current lite version it only selects an installed/browser voice; it does not upload audio or train a voice model.
+`preferred_voice_name` and `voice_style` are included for future custom voice providers. In the current lite version they only select an installed/browser voice and playback style; they do not upload audio or train a voice model.
+
+## Voice Style Presets
+
+The current browser-native voice can be shaped with four local presets:
+
+- `warm`: softer and slightly slower for daily companionship.
+- `clear`: steadier and clearer for factual or work help.
+- `low`: slower and calmer for late-night or anxious moments.
+- `bright`: lighter and quicker for short casual replies.
+
+These presets adjust browser playback rate, pitch, pause length, and spoken chunk length. They also flow into `response_plan.voice_profile`, which gives the backend a stable contract for a later custom Samantha voice.
+
+## Custom Voice Readiness
+
+Voice-lite reserves a `future_custom_voice_slot` named `samantha_original_voice` in `response_plan.voice_profile`. This is only a clean integration point for a future TTS provider or self-hosted voice model. It is not voice cloning, and it should only be connected to a licensed or original voice with explicit consent.
 
 ## Backend Behavior
 

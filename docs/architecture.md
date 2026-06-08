@@ -139,11 +139,18 @@ The MVP now implements optional browser-native voice without adding a provider a
 - `voice_session.stt_service`
 - `voice_session.tts_service`
 - `voice_session.voice_session_service`
+- `voice_session.preferred_voice_lang`
+- `voice_session.preferred_voice_name`
+- `voice_session.voice_style`
+- `voice_session.voice_rate`
+- `voice_session.voice_pitch`
 - `voice_session.speech_recognition_supported`
 - `voice_session.speech_synthesis_supported`
 - `voice_session.speech_cancel_count`
 
 The frontend uses `SpeechRecognition` / `webkitSpeechRecognition` for speech-to-text when available and `speechSynthesis` for text-to-speech. Text remains the default path. No raw audio is stored; only the final transcript is sent to the existing chat API. When `voice_mode` is true, `response_plan` asks Samantha for shorter, more conversational spoken replies with less markdown.
+
+`response_plan.voice_profile` normalizes the browser voice settings into a backend contract. It stores the selected style (`warm`, `clear`, `low`, or `bright`), browser voice name, rate/pitch hints, playback strategy, raw-audio privacy status, and a future `samantha_original_voice` slot for an original/custom TTS provider.
 
 The admin dashboard also includes `voice_lab`, a transcript-based voice test bot. It runs the normal evaluation pipeline with `voice_mode: true`, stores results in `evaluation_runs` / `evaluation_messages`, and can play the latest transcript aloud in the browser. This gives spoken quality feedback without introducing a real audio upload or STT/TTS provider yet.
 

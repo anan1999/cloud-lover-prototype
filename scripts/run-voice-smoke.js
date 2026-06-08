@@ -64,6 +64,7 @@ function run() {
   assertIncludes(indexHtml, "id=\"micBtn\"", "index.html");
   assertIncludes(indexHtml, "id=\"voiceReplyToggle\"", "index.html");
   assertIncludes(indexHtml, "id=\"voiceNameSelect\"", "index.html");
+  assertIncludes(indexHtml, "id=\"voiceStyleSelect\"", "index.html");
   assertIncludes(indexHtml, "id=\"voicePreviewBtn\"", "index.html");
   assertIncludes(indexHtml, "voice_mode: voiceMode", "index.html");
   assertIncludes(indexHtml, "input_channel: inputChannel", "index.html");
@@ -72,6 +73,10 @@ function run() {
   assertIncludes(indexHtml, "speech_synthesis_supported", "index.html");
   assertIncludes(indexHtml, "speech_cancel_count", "index.html");
   assertIncludes(indexHtml, "preferred_voice_name", "index.html");
+  assertIncludes(indexHtml, "voice_style", "index.html");
+  assertIncludes(indexHtml, "voiceStylePresets", "index.html");
+  assertIncludes(indexHtml, "applyVoiceStyle", "index.html");
+  assertIncludes(indexHtml, "currentVoiceStylePreset", "index.html");
   assertIncludes(indexHtml, "populateVoiceOptions", "index.html");
   assertIncludes(indexHtml, "splitSpeechText", "index.html");
   assertIncludes(indexHtml, "localStorage", "index.html");
@@ -87,6 +92,10 @@ function run() {
 
   assertIncludes(serverJs, "short_spoken_reply", "server.js");
   assertIncludes(serverJs, "voice_telemetry", "server.js");
+  assertIncludes(serverJs, "voice_profile", "server.js");
+  assertIncludes(serverJs, "buildVoiceProfile", "server.js");
+  assertIncludes(serverJs, "future_custom_voice_slot", "server.js");
+  assertIncludes(serverJs, "consent_required_for_voice_clone", "server.js");
   assertIncludes(serverJs, "dialogue_contract", "server.js");
   assertIncludes(serverJs, "applyDialogueQualityGate", "server.js");
   assertIncludes(serverJs, "EVALUATION_SCENARIOS.voice_lab", "server.js");

@@ -2384,6 +2384,7 @@ function buildCompanionPolicyPreamble(conversation) {
     "Voice-ready rule: if input_channel, output_channel, or voice_mode is voice/true, answer like a short phone voice message: relaxed, specific, lightly warm, and easy to hear. Default to 1-2 short sentences. Avoid markdown, code blocks, lists, customer-service phrasing, therapy-template phrasing, and essay-like completeness unless explicitly requested.",
     `Response plan JSON: ${JSON.stringify(conversation.response_plan || {}, null, 2)}`,
     `Dialogue contract JSON: ${JSON.stringify(conversation.response_plan?.dialogue_contract || {}, null, 2)}`,
+    `Voice profile JSON: ${JSON.stringify(conversation.response_plan?.voice_profile || {}, null, 2)}`,
     `Memory context JSON: ${JSON.stringify(conversation.memory_context || {}, null, 2)}`,
     `Emotional continuity JSON: ${JSON.stringify(conversation.emotional_continuity_summary || {}, null, 2)}`
   ].join("\n");
@@ -2557,6 +2558,37 @@ function buildDialogueContract(conversation, intent, emotionState = {}, voiceMod
   };
 }
 
+function normalizeVoiceStyle(value) {
+  const normalized = String(value || "warm").toLowerCase();
+  return ["warm", "clear", "low", "bright"].includes(normalized) ? normalized : "warm";
+}
+
+function buildVoiceProfile(conversation, voiceSession = {}, voiceMode = false) {
+  if (!voiceMode) return {};
+  const style = normalizeVoiceStyle(voiceSession.voice_style || conversation?.voice_style);
+  const styleProfiles = {
+    warm: { label: "warm", speaking_hint: "soft, close, slightly slower, good for companionship" },
+    clear: { label: "clear", speaking_hint: "crisp, steady, good for facts and work help" },
+    low: { label: "low", speaking_hint: "lower, slower, calm, good for anxious or late-night listening" },
+    bright: { label: "bright", speaking_hint: "lighter, quicker, good for casual short turns" }
+  };
+  return {
+    tts_provider: voiceSession.tts_service || "browser_speech_synthesis",
+    voice_session_service: voiceSession.voice_session_service || "browser_native",
+    future_custom_voice_slot: "samantha_original_voice",
+    custom_voice_ready: false,
+    voice_style: style,
+    speaking_hint: styleProfiles[style].speaking_hint,
+    preferred_voice_lang: cleanText(voiceSession.preferred_voice_lang || "zh-TW", 20),
+    preferred_voice_name: cleanText(voiceSession.preferred_voice_name || "", 80),
+    voice_rate: Number.isFinite(Number(voiceSession.voice_rate)) ? Number(voiceSession.voice_rate) : null,
+    voice_pitch: Number.isFinite(Number(voiceSession.voice_pitch)) ? Number(voiceSession.voice_pitch) : null,
+    playback_strategy: "sentence_chunks",
+    source_audio_stored: false,
+    consent_required_for_voice_clone: true
+  };
+}
+
 function buildResponsePlan(conversation, emotionState = conversation?.emotion_state || {}) {
   const intent = inferUserIntentForPlan(conversation);
   const companionMode = conversation?.lover_profile?.companion_mode || "casual_chat";
@@ -2564,6 +2596,7 @@ function buildResponsePlan(conversation, emotionState = conversation?.emotion_st
   const voiceSession = parseJsonObject(conversation?.voice_session);
   const toneIntelligence = buildToneIntelligencePlan(conversation, intent, emotionState, voiceMode);
   const dialogueContract = buildDialogueContract(conversation, intent, emotionState, voiceMode);
+  const voiceProfile = buildVoiceProfile(conversation, voiceSession, voiceMode);
   const memoryContext = conversation?.memory_context || {};
   const selectedMemories = [
     ...(memoryContext.stable_profile || []),
@@ -2592,10 +2625,13 @@ function buildResponsePlan(conversation, emotionState = conversation?.emotion_st
     voice_telemetry: voiceMode ? {
       input_channel: conversation?.input_channel || "voice",
       output_channel: conversation?.output_channel || "voice",
+      voice_style: voiceProfile.voice_style,
+      preferred_voice_name: voiceProfile.preferred_voice_name,
       speech_recognition_supported: Boolean(voiceSession.speech_recognition_supported),
       speech_synthesis_supported: Boolean(voiceSession.speech_synthesis_supported),
       speech_cancel_count: Math.max(0, Math.round(Number(voiceSession.speech_cancel_count || 0)))
     } : {},
+    voice_profile: voiceProfile,
     detected_emotion: emotionState.primary_emotion || "neutral",
     emotion_intensity: Number(emotionState.intensity || 1),
     user_intent: intent,
@@ -5916,8 +5952,10 @@ async function runEvaluation({ user, mode, scenarioKey, turns, skipNaturalize = 
         voice_session_service: "admin_voice_lab",
         ready: true,
         preferred_voice_lang: "zh-TW",
-        voice_rate: 1,
-        voice_pitch: 1,
+        preferred_voice_name: "Samantha browser preview",
+        voice_style: "warm",
+        voice_rate: 0.92,
+        voice_pitch: 1.02,
         enable_voice_reply: true,
         speech_recognition_supported: false,
         speech_synthesis_supported: true,

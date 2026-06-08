@@ -410,6 +410,14 @@
             Samantha voice reply
           </label>
           <button class="ghost" id="voiceStopBtn" type="button">停止語音</button>
+          <label for="voiceStyleSelect">聲線
+            <select id="voiceStyleSelect">
+              <option value="warm">溫柔</option>
+              <option value="clear">清晰</option>
+              <option value="low">低沉</option>
+              <option value="bright">輕快</option>
+            </select>
+          </label>
           <label for="voiceRateInput">語速
             <input id="voiceRateInput" type="range" min="0.75" max="1.35" step="0.05" value="1">
           </label>
@@ -586,6 +594,7 @@
         enableVoiceReply: false,
         rate: 0.92,
         pitch: 1.02,
+        voiceStyle: "warm",
         preferredVoiceLang: "zh-TW",
         preferredVoiceName: "",
         speakingToken: 0,
@@ -605,6 +614,13 @@
       emotional_support: { label: "情緒支持", style: "先接住情緒，再溫柔反映與陪伴，不急著給答案。" },
       work_helper: { label: "工作助手", style: "更清晰、務實、可執行，幫使用者拆解工作與技術問題。" },
       reflection_mode: { label: "反思整理", style: "用問題和摘要幫使用者釐清感受、選項與下一步。" }
+    };
+
+    const voiceStylePresets = {
+      warm: { label: "溫柔", rate: 0.92, pitch: 1.02, pauseMs: 120, chunkLength: 78, description: "柔一點、慢一點，適合陪伴和日常聊天。" },
+      clear: { label: "清晰", rate: 0.98, pitch: 1, pauseMs: 80, chunkLength: 92, description: "咬字清楚，適合工作整理和事實回答。" },
+      low: { label: "低沉", rate: 0.88, pitch: 0.9, pauseMs: 140, chunkLength: 76, description: "更慢、更穩，適合睡前或焦慮時聽。" },
+      bright: { label: "輕快", rate: 1.04, pitch: 1.08, pauseMs: 70, chunkLength: 96, description: "比較有精神，適合短句閒聊。" }
     };
 
     const characterConfig = {
@@ -641,6 +657,7 @@
       micBtn: document.querySelector("#micBtn"),
       voiceReplyToggle: document.querySelector("#voiceReplyToggle"),
       voiceStopBtn: document.querySelector("#voiceStopBtn"),
+      voiceStyleSelect: document.querySelector("#voiceStyleSelect"),
       voiceRateInput: document.querySelector("#voiceRateInput"),
       voicePitchInput: document.querySelector("#voicePitchInput"),
       voiceLangSelect: document.querySelector("#voiceLangSelect"),
@@ -762,6 +779,7 @@
               ready: voiceMode,
               preferred_voice_lang: state.voice.preferredVoiceLang,
               preferred_voice_name: state.voice.preferredVoiceName,
+              voice_style: state.voice.voiceStyle,
               voice_rate: state.voice.rate,
               voice_pitch: state.voice.pitch,
               enable_voice_reply: state.voice.enableVoiceReply,
@@ -1097,8 +1115,10 @@
       try {
         const saved = JSON.parse(localStorage.getItem("samantha_voice_settings") || "{}");
         state.voice.enableVoiceReply = saved.enable_voice_reply === true;
-        state.voice.rate = Number.isFinite(Number(saved.voice_rate)) ? Number(saved.voice_rate) : 0.92;
-        state.voice.pitch = Number.isFinite(Number(saved.voice_pitch)) ? Number(saved.voice_pitch) : 1.02;
+        state.voice.voiceStyle = voiceStylePresets[saved.voice_style] ? saved.voice_style : "warm";
+        const preset = voiceStylePresets[state.voice.voiceStyle] || voiceStylePresets.warm;
+        state.voice.rate = Number.isFinite(Number(saved.voice_rate)) ? Number(saved.voice_rate) : preset.rate;
+        state.voice.pitch = Number.isFinite(Number(saved.voice_pitch)) ? Number(saved.voice_pitch) : preset.pitch;
         state.voice.preferredVoiceLang = saved.preferred_voice_lang || "zh-TW";
         state.voice.preferredVoiceName = saved.preferred_voice_name || "";
         state.voice.cancelCount = Number.isFinite(Number(saved.speech_cancel_count)) ? Number(saved.speech_cancel_count) : 0;
@@ -1107,6 +1127,7 @@
       }
       state.voice.support = voiceUtils.getVoiceSupport(window);
       dom.voiceReplyToggle.checked = state.voice.enableVoiceReply;
+      dom.voiceStyleSelect.value = state.voice.voiceStyle;
       dom.voiceRateInput.value = String(state.voice.rate);
       dom.voicePitchInput.value = String(state.voice.pitch);
       dom.voiceLangSelect.value = state.voice.preferredVoiceLang;
@@ -1118,6 +1139,7 @@
       try {
         localStorage.setItem("samantha_voice_settings", JSON.stringify({
           enable_voice_reply: state.voice.enableVoiceReply,
+          voice_style: state.voice.voiceStyle,
           voice_rate: state.voice.rate,
           voice_pitch: state.voice.pitch,
           preferred_voice_lang: state.voice.preferredVoiceLang,
@@ -1158,7 +1180,25 @@
     function selectedVoiceLabel() {
       const voice = selectedSpeechVoice();
       if (!state.voice.support.speech_synthesis_supported) return "";
-      return voice ? ` 目前聲音：${voice.name}（${voice.lang || "unknown"}）。` : " 尚未載入可用聲音。";
+      const style = voiceStylePresets[state.voice.voiceStyle] || voiceStylePresets.warm;
+      const voiceText = voice ? `目前聲音：${voice.name}（${voice.lang || "unknown"}）` : "尚未載入可用聲音";
+      return ` ${voiceText}。聲線：${style.label}，${style.description}`;
+    }
+
+    function applyVoiceStyle(styleKey, persist = true) {
+      const preset = voiceStylePresets[styleKey] || voiceStylePresets.warm;
+      state.voice.voiceStyle = voiceStylePresets[styleKey] ? styleKey : "warm";
+      state.voice.rate = preset.rate;
+      state.voice.pitch = preset.pitch;
+      dom.voiceStyleSelect.value = state.voice.voiceStyle;
+      dom.voiceRateInput.value = String(state.voice.rate);
+      dom.voicePitchInput.value = String(state.voice.pitch);
+      if (persist) saveVoiceSettings();
+      renderVoiceStatus(`已套用 ${preset.label} 聲線。${preset.description}`);
+    }
+
+    function currentVoiceStylePreset() {
+      return voiceStylePresets[state.voice.voiceStyle] || voiceStylePresets.warm;
     }
 
     function renderVoiceStatus(message = "") {
@@ -1196,8 +1236,9 @@
         if (!chunk || token !== state.voice.speakingToken) return resolve();
         const utterance = new SpeechSynthesisUtterance(chunk);
         utterance.lang = state.voice.preferredVoiceLang || "zh-TW";
-        utterance.rate = Math.max(0.75, Math.min(Number(state.voice.rate || 0.92), 1.35));
-        utterance.pitch = Math.max(0.75, Math.min(Number(state.voice.pitch || 1.02), 1.25));
+        const preset = currentVoiceStylePreset();
+        utterance.rate = Math.max(0.75, Math.min(Number(state.voice.rate || preset.rate), 1.35));
+        utterance.pitch = Math.max(0.75, Math.min(Number(state.voice.pitch || preset.pitch), 1.25));
         const voice = selectedSpeechVoice();
         if (voice) utterance.voice = voice;
         utterance.onend = resolve;
@@ -1216,13 +1257,14 @@
       if (!cleaned) return;
       cancelSpeech("replace");
       const token = state.voice.speakingToken;
-      const chunks = voiceUtils.splitSpeechText(cleaned, 86);
+      const preset = currentVoiceStylePreset();
+      const chunks = voiceUtils.splitSpeechText(cleaned, preset.chunkLength || 86);
       const previewMode = options.preview === true;
       renderVoiceStatus(previewMode ? "正在試聽 Samantha 的聲音。" : "Samantha 正在朗讀回覆。");
       for (const [index, chunk] of chunks.entries()) {
         if (token !== state.voice.speakingToken) return;
         await speakChunk(chunk, token);
-        if (index < chunks.length - 1) await delay(90);
+        if (index < chunks.length - 1) await delay(preset.pauseMs || 90);
       }
       if (token === state.voice.speakingToken) renderVoiceStatus();
     }
@@ -1378,6 +1420,9 @@
       renderVoiceStatus(state.voice.enableVoiceReply ? "已開啟 Samantha voice reply；之後的回覆會朗讀。" : "已關閉 Samantha voice reply。");
     });
     dom.voiceStopBtn.addEventListener("click", () => cancelSpeech("user"));
+    dom.voiceStyleSelect.addEventListener("change", event => {
+      applyVoiceStyle(event.target.value || "warm");
+    });
     dom.voiceRateInput.addEventListener("input", event => {
       state.voice.rate = Number(event.target.value || 1);
       saveVoiceSettings();
@@ -1401,7 +1446,8 @@
     dom.voicePreviewBtn.addEventListener("click", () => {
       const wasEnabled = state.voice.enableVoiceReply;
       state.voice.enableVoiceReply = true;
-      speakReply("你好，我是 Samantha。這個聲音聽起來如果太快或太硬，你可以換一個聲音，或把語速再放慢一點。", { preview: true })
+      const preset = currentVoiceStylePreset();
+      speakReply(`你好，我是 Samantha。現在是${preset.label}聲線；如果聽起來太快或太硬，你可以換一個聲音，或把語速再放慢一點。`, { preview: true })
         .finally(() => {
           state.voice.enableVoiceReply = wasEnabled;
         });

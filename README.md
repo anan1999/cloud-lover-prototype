@@ -130,9 +130,10 @@ Voice-lite MVP:
 - The chat UI now includes optional browser-native speech input and Samantha voice reply.
 - Speech input uses `SpeechRecognition` / `webkitSpeechRecognition` when available; unsupported browsers fall back to text chat.
 - Voice reply uses `window.speechSynthesis`, strips markdown/code blocks before speaking, and can be cancelled.
-- Voice settings live in `localStorage`: `enable_voice_reply`, `voice_rate`, `voice_pitch`, `preferred_voice_lang`, and `preferred_voice_name`.
-- The UI ranks browser voices, lets the user choose a voice, previews it, uses gentler default rate/pitch, and plays replies sentence by sentence so browser TTS sounds less robotic.
+- Voice settings live in `localStorage`: `enable_voice_reply`, `voice_rate`, `voice_pitch`, `preferred_voice_lang`, `preferred_voice_name`, and `voice_style`.
+- The UI ranks browser voices, lets the user choose a voice, previews it, supports `warm` / `clear` / `low` / `bright` voice style presets, uses gentler default rate/pitch, and plays replies sentence by sentence so browser TTS sounds less robotic.
 - Chat payloads include `input_channel`, `output_channel`, `voice_mode`, and `voice_session` metadata.
+- Backend `response_plan.voice_profile` keeps the current browser TTS settings plus a future `samantha_original_voice` slot, so a custom/self-hosted voice provider can be added later without changing the chat API contract.
 - Raw audio is not stored; only the final transcript is sent as a normal user message.
 - Admin dashboard includes Voice Lab, a transcript-based voice test bot that scores spoken reply length, markdown/list leakage, and playback quality with browser TTS.
 - More details: [docs/voice-lite.md](docs/voice-lite.md).
