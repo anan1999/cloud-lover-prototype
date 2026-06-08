@@ -63,11 +63,22 @@ For the shortest launch path, use [ONE_SHOT_LAUNCH.md](./ONE_SHOT_LAUNCH.md).
 Run these against a local server before pushing conversation or provider changes:
 
 ```powershell
+$env:SMOKE_URL="http://127.0.0.1:8787"
+npm run smoke:quality
+
 $env:REGRESSION_URL="http://127.0.0.1:8787"
 npm run regression:quality
 ```
 
-`smoke:quality` checks the shortest no-mock path. `regression:quality` covers the issues that previously appeared: fact questions turning into comfort templates, wrong event recall, AIEXPO/COMPUTEX confusion, unsafe dependency replies, mock fallback, and stale third-party providers.
+`smoke:quality` checks the shortest no-mock path and defaults to `codex_only` so the replies must come from a real LLM route. `regression:quality` covers the issues that previously appeared: fact questions turning into comfort templates, wrong event recall, AIEXPO/COMPUTEX confusion, unsafe dependency replies, mock fallback, and stale third-party providers.
+
+To force larger test suites through Codex instead of grounded rules:
+
+```powershell
+$env:REGRESSION_PROVIDER_MODE="codex_only"
+$env:REGRESSION_REQUIRE_REAL_PROVIDER="1"
+npm run regression:quality
+```
 
 For broader coverage, sample the 10,000-question bank:
 
@@ -75,6 +86,8 @@ For broader coverage, sample the 10,000-question bank:
 $env:BANK_SAMPLE_URL="http://127.0.0.1:8787"
 $env:BANK_SAMPLE_LIMIT="100"
 $env:BANK_SAMPLE_CASE_TIMEOUT_MS="8000"
+$env:BANK_SAMPLE_PROVIDER_MODE="codex_only"
+$env:BANK_SAMPLE_REQUIRE_REAL_PROVIDER="1"
 npm run eval:sample
 ```
 

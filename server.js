@@ -5913,7 +5913,8 @@ async function handleChat(req, res) {
     if (!user) {
       effectivePayload = replaceConversationInPayload(payload, effectiveConversation);
     }
-    const routed = await routeProviders(effectivePayload, effectiveConversation);
+    const routeOptions = chatRouteOptionsFromPayload(payload, user);
+    const routed = await routeProviders(effectivePayload, effectiveConversation, routeOptions);
     const response = { ...routed.result };
     if (user) {
       await addMessage(user.id, "lover", routed.result.reply, {
@@ -5950,6 +5951,20 @@ async function handleChat(req, res) {
     const message = status === 503 ? "AI providers are temporarily unavailable" : (IS_PROD ? "Bad request" : sanitizeError(error.message));
     return sendJson(req, res, status, { error: message });
   }
+}
+
+function chatRouteOptionsFromPayload(payload, user) {
+  const providerMode = ["grounded", "codex_only", "gemini_codex"].includes(payload?.provider_mode) ? payload.provider_mode : "";
+  const canUseTestRouting = !IS_PROD || isAdminUser(user);
+  if (!providerMode || !canUseTestRouting) return {};
+  const requireRealProvider = payload.require_real_provider === true || providerMode !== "grounded";
+  return {
+    allowMockFallback: payload.allow_mock_fallback === true,
+    requireRealProvider,
+    skipCache: requireRealProvider || payload.skip_cache === true,
+    skipNaturalize: payload.skip_naturalize === true,
+    providerOrder: providerOrderForEvaluation(providerMode)
+  };
 }
 
 function handleProviderStatus(req, res) {

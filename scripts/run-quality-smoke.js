@@ -1,5 +1,8 @@
 const baseUrl = process.env.SMOKE_URL || `http://127.0.0.1:${process.env.PORT || 8809}`;
 const endpoint = process.env.SMOKE_ENDPOINT || new URL("/api/cloud-lover/chat", baseUrl).toString();
+const providerMode = process.env.SMOKE_PROVIDER_MODE || "codex_only";
+const requireRealProvider = process.env.SMOKE_REQUIRE_REAL_PROVIDER === "0" ? false : providerMode !== "grounded";
+const allowMockFallback = process.env.SMOKE_ALLOW_MOCK_FALLBACK === "1";
 
 const cases = [
   {
@@ -45,6 +48,9 @@ const cases = [
 
 function payloadFor(item) {
   return {
+    provider_mode: providerMode,
+    require_real_provider: requireRealProvider,
+    allow_mock_fallback: allowMockFallback,
     messages: [{
       role: "user",
       content: JSON.stringify({
@@ -91,8 +97,9 @@ async function main() {
     return counts;
   }, {});
 
-  console.log(JSON.stringify({ provider_counts: providerCounts, results }, null, 2));
-  if (providerCounts.mock) process.exitCode = 2;
+  const nonRealResults = results.filter(item => requireRealProvider && !/(gemini|codex|openai|groq)/i.test(String(item.provider || "")));
+  console.log(JSON.stringify({ route_mode: providerMode, require_real_provider: requireRealProvider, provider_counts: providerCounts, non_real_results: nonRealResults.map(item => item.name), results }, null, 2));
+  if (providerCounts.mock || nonRealResults.length) process.exitCode = 2;
 }
 
 main().catch(error => {

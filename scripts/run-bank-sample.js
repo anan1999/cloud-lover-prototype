@@ -12,6 +12,9 @@ const categoryFilter = (process.env.BANK_SAMPLE_CATEGORIES || "").split(",").map
 const caseTimeoutMs = Number(process.env.BANK_SAMPLE_CASE_TIMEOUT_MS || 70_000);
 const interCaseDelayMs = Math.max(0, Number(process.env.BANK_SAMPLE_DELAY_MS || 750));
 const retryCount = Math.max(1, Number(process.env.BANK_SAMPLE_RETRIES || 3));
+const providerMode = process.env.BANK_SAMPLE_PROVIDER_MODE || process.env.REGRESSION_PROVIDER_MODE || process.env.SMOKE_PROVIDER_MODE || "";
+const requireRealProvider = process.env.BANK_SAMPLE_REQUIRE_REAL_PROVIDER === "1" || (providerMode && providerMode !== "grounded");
+const allowMockFallback = process.env.BANK_SAMPLE_ALLOW_MOCK_FALLBACK === "1";
 
 const comfortTemplate = /我在。你剛剛那句我收到了|卡住你的地方在哪裡|願意多說一點|先接住|先不用硬撐/;
 const genericFactTemplate = /可以先用很生活的方式理解|可以先看成一個有邊界的概念|有用途、有情境|它不是只躺在課本裡/;
@@ -99,6 +102,9 @@ function modeFor(item) {
 function payloadFor(item) {
   const seedContext = item.seed_context || {};
   return {
+    ...(providerMode ? { provider_mode: providerMode } : {}),
+    require_real_provider: requireRealProvider,
+    allow_mock_fallback: allowMockFallback,
     messages: [{
       role: "user",
       content: JSON.stringify({
@@ -139,6 +145,9 @@ function categoryChecks(item, result) {
   if (!result.ok) issue(issues, "http_failed", "high", `HTTP ${result.status}`);
   if (!text) issue(issues, "empty_reply", "high", "沒有回覆內容。");
   if (result.provider === "mock") issue(issues, "mock_reply", "high", "不應該使用 mock 回覆。");
+  if (requireRealProvider && !/(gemini|codex|openai|groq)/i.test(String(result.provider || ""))) {
+    issue(issues, "non_real_provider", "high", `要求真實 LLM，但本輪 provider 是 ${result.provider || "none"}。`);
+  }
   if (/nvidia|openrouter/i.test(String(result.provider || ""))) issue(issues, "unexpected_provider", "high", `不應該使用 ${result.provider}。`);
   if (has(text, comfortTemplate) && /是誰|是什麼|新聞|你知道|AIEXPO|COMPUTEX|黃仁勳|賴清德/i.test(input)) {
     issue(issues, "fact_to_comfort_template", "high", "事實題掉回安慰模板。");
@@ -312,6 +321,8 @@ function summarize(results, status) {
     case_timeout_ms: caseTimeoutMs,
     inter_case_delay_ms: interCaseDelayMs,
     retry_count: retryCount,
+    route_mode: providerMode || "default",
+    require_real_provider: requireRealProvider,
     category_filter: categoryFilter,
     total: results.length,
     passed: results.length - failed.length,

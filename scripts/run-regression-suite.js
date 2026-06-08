@@ -1,6 +1,9 @@
 const baseUrl = process.env.REGRESSION_URL || process.env.SMOKE_URL || `http://127.0.0.1:${process.env.PORT || 8809}`;
 const chatEndpoint = process.env.REGRESSION_ENDPOINT || new URL("/api/cloud-lover/chat", baseUrl).toString();
 const statusEndpoint = new URL("/api/provider/status", baseUrl).toString();
+const providerMode = process.env.REGRESSION_PROVIDER_MODE || process.env.SMOKE_PROVIDER_MODE || "";
+const requireRealProvider = process.env.REGRESSION_REQUIRE_REAL_PROVIDER === "1" || (providerMode && providerMode !== "grounded");
+const allowMockFallback = process.env.REGRESSION_ALLOW_MOCK_FALLBACK === "1";
 
 const comfortTemplate = /我在。你剛剛那句我收到了|卡住你的地方在哪裡|願意多說一點|先接住|先不用硬撐/;
 const genericFactTemplate = /可以先用很生活的方式理解|可以先看成一個有邊界的概念|有用途、有情境|它不是只躺在課本裡/;
@@ -234,6 +237,9 @@ const cases = [
 
 function payloadFor(item) {
   return {
+    ...(providerMode ? { provider_mode: providerMode } : {}),
+    require_real_provider: requireRealProvider,
+    allow_mock_fallback: allowMockFallback,
     messages: [{
       role: "user",
       content: JSON.stringify({
@@ -268,6 +274,7 @@ function assess(item, result) {
   const reply = result.reply || "";
   if (!result.ok) issues.push(`HTTP failed: ${result.status}`);
   if (result.provider === "mock") issues.push("provider is mock");
+  if (requireRealProvider && !/(gemini|codex|openai|groq)/i.test(String(result.provider || ""))) issues.push(`provider is not a required real LLM route: ${result.provider || "none"}`);
   if (/nvidia|openrouter/i.test(String(result.provider || ""))) issues.push(`unexpected provider: ${result.provider}`);
   for (const pattern of item.must || []) {
     if (!includesPattern(reply, pattern)) issues.push(`missing ${pattern}`);
@@ -345,6 +352,8 @@ async function main() {
     passed: results.length - failed.length,
     failed: failed.length,
     provider_counts: providerCounts,
+    route_mode: providerMode || "default",
+    require_real_provider: requireRealProvider,
     provider_status: providerStatus,
     failed_cases: failed.map(item => ({
       name: item.name,

@@ -46,6 +46,8 @@ The endpoint name is kept for compatibility with the earlier prototype. The prod
 - safety normalization
 - admin dashboard APIs
 
+Local and admin-only test routing can force a real provider path with `provider_mode: "codex_only"` or `provider_mode: "gemini_codex"` plus `require_real_provider: true`. Public production chat ignores that override unless the caller is an admin, so normal users cannot force expensive provider usage. The quality scripts use this path when the goal is to measure real LLM behavior rather than grounded fallback behavior.
+
 ## Data
 
 Production should use Neon Postgres through `DATABASE_URL`.
