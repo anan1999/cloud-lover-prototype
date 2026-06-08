@@ -4,6 +4,7 @@
 .codex-provider-*.json
 .codex-provider-*.prompt.txt
 .local-db.json
+reports/evaluation-runs/
 node_modules/
 .DS_Store
 Thumbs.db

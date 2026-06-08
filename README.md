@@ -93,6 +93,23 @@ npm run eval:sample
 
 `BANK_SAMPLE_CASE_TIMEOUT_MS` keeps the evaluator honest: a slow or stuck round becomes a visible failed case instead of hanging the whole test run.
 
+For a long 10,000-question run, write every result to JSONL and enable resume:
+
+```powershell
+$env:BANK_SAMPLE_URL="http://127.0.0.1:8787"
+$env:BANK_SAMPLE_LIMIT="10000"
+$env:BANK_SAMPLE_CASE_TIMEOUT_MS="70000"
+$env:BANK_SAMPLE_PROVIDER_MODE="codex_only"
+$env:BANK_SAMPLE_REQUIRE_REAL_PROVIDER="1"
+$env:BANK_SAMPLE_ALLOW_MOCK_FALLBACK="0"
+$env:BANK_SAMPLE_OUTPUT="reports/evaluation-runs/bank-10000-codex.jsonl"
+$env:BANK_SAMPLE_RESUME="1"
+$env:BANK_SAMPLE_FAIL_ON_ISSUES="0"
+npm run eval:bank
+```
+
+The full real-LLM run is intentionally sequential and resumable. At Codex speeds it can take many hours, so use `BANK_SAMPLE_RESUME=1` and keep the JSONL output. The summary is written next to the JSONL file as `*-summary.json`. The runner still fails if mock, NVIDIA, or OpenRouter appears in the provider route.
+
 ## Product Architecture
 
 - Frontend: `index.html` chat UI, account UI, companion settings, conversation mode selector, memory panel, and developer diagnostics.
