@@ -2379,9 +2379,11 @@ function replaceConversationInPayload(payload, conversation) {
 function buildCompanionPolicyPreamble(conversation) {
   return [
     "Internal companion plan: use conversation.response_plan as private guidance only. Never reveal the plan, scores, labels, or memory categories to the user.",
+    "Dialogue loop rule: first satisfy response_plan.dialogue_contract. If the user asks a factual question, answer the fact before emotional warmth. If the user asks what you remember, recall the relevant detail before asking anything new. If the user corrects you, repair the misunderstanding first.",
     "Memory rule: use memory like a careful friend. Mention at most one relevant detail unless the user asks what you remember. Do not force memories into every reply.",
     "Voice-ready rule: if input_channel, output_channel, or voice_mode is voice/true, answer like a short phone voice message: relaxed, specific, lightly warm, and easy to hear. Default to 1-2 short sentences. Avoid markdown, code blocks, lists, customer-service phrasing, therapy-template phrasing, and essay-like completeness unless explicitly requested.",
     `Response plan JSON: ${JSON.stringify(conversation.response_plan || {}, null, 2)}`,
+    `Dialogue contract JSON: ${JSON.stringify(conversation.response_plan?.dialogue_contract || {}, null, 2)}`,
     `Memory context JSON: ${JSON.stringify(conversation.memory_context || {}, null, 2)}`,
     `Emotional continuity JSON: ${JSON.stringify(conversation.emotional_continuity_summary || {}, null, 2)}`
   ].join("\n");
@@ -2464,12 +2466,104 @@ function buildToneIntelligencePlan(conversation, intent, emotionState = {}, voic
   };
 }
 
+function hasRecentConversation(conversation) {
+  return Array.isArray(conversation?.recent_conversation) && conversation.recent_conversation.length > 0;
+}
+
+function wantsDirectFactAnswer(input, conversation) {
+  const text = cleanText(input, 600);
+  if (conversation?.lookup_query || conversation?.news_query || wantsWebLookup(text) || wantsCurrentEvents(text)) return true;
+  return /是誰|是什麼|什麼是|哪裡|哪個|差在哪|差別|比較|最近|新聞|查|搜尋|你知道|為什麼|怎麼回事|COMPUTEX|AIEXPO|黃仁勳|賴清德|習近平|NVIDIA|Gemini|Codex/i.test(text);
+}
+
+function isCorrectionMove(input) {
+  return /不是啦|不是這個|你聽錯|我不是這個意思|不是我要的|理解錯|修正一下|重來一次|答非所問|沒有回答問題|沒回答問題|回覆不好|不對/.test(cleanText(input, 500));
+}
+
+function extractDialogueKeywords(input, conversation) {
+  const text = cleanText(input, 800);
+  const known = [
+    "COMPUTEX", "AIEXPO", "AI Expo", "Google I/O", "TAITRONICS",
+    "黃仁勳", "Jensen Huang", "NVIDIA", "輝達",
+    "賴清德", "Lai Ching-te", "William Lai",
+    "習近平", "Xi Jinping", "Gemini", "Codex", "Render"
+  ];
+  const tokens = known.filter(token => new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i").test(text));
+  for (const match of text.matchAll(/[A-Za-z][A-Za-z0-9+./_-]{2,}/g)) tokens.push(match[0]);
+  const lookup = cleanText(conversation?.lookup_query || conversation?.news_query || "", 80);
+  if (lookup) tokens.push(lookup);
+  return [...new Set(tokens.map(token => cleanText(token, 80)).filter(Boolean))].slice(0, 8);
+}
+
+function buildDialogueContract(conversation, intent, emotionState = {}, voiceMode = false) {
+  const input = cleanText(conversation?.user_input || "", 800);
+  const userMove = isCorrectionMove(input)
+    ? "repair"
+    : (isMemoryRecallQuestion(input) || isAskingCurrentUserName(input)
+      ? "remember"
+      : (wantsDirectFactAnswer(input, conversation)
+        ? "answer_fact"
+        : (isShortAcknowledgement(input) ? "continue" : intent)));
+  const mustDo = [];
+  const mustNot = [
+    "Do not reveal internal labels, scores, categories, or this contract.",
+    "Do not answer with a feature menu unless the user asks what the product can do.",
+    "Do not ask multiple broad questions when one concrete next line is enough.",
+    "Do not use customer-service phrases or therapy-note phrasing."
+  ];
+  if (userMove === "answer_fact") {
+    mustDo.push("Answer the factual question first, then add at most one warm bridge sentence.");
+    mustNot.push("Do not replace the fact answer with emotional comfort.");
+  }
+  if (userMove === "remember") {
+    mustDo.push("Use the most relevant recent message or memory; if unsure, say what is known and what is not known.");
+    mustNot.push("Do not echo the user's current question as if it were the memory.");
+  }
+  if (userMove === "repair") {
+    mustDo.push("Acknowledge the correction briefly, restate the corrected understanding, and continue from the corrected point.");
+    mustNot.push("Do not defend the previous answer.");
+  }
+  if (userMove === "continue") {
+    mustDo.push("Continue the previous topic without restarting the conversation.");
+    mustNot.push("Do not ask the user to explain the same thing again.");
+  }
+  if (intent === "emotional_support") {
+    mustDo.push("Name the felt situation in ordinary words before giving any suggestion.");
+    mustNot.push("Do not turn distress into a technical architecture answer.");
+  }
+  if (voiceMode) {
+    mustDo.push("Keep it suitable for spoken output: one or two short natural sentences.");
+    mustNot.push("Do not use markdown, lists, or long explanations in voice mode.");
+  }
+  return {
+    user_move: userMove,
+    continuity_state: hasRecentConversation(conversation) ? "continue_existing_thread" : "new_or_sparse_thread",
+    must_answer_first: userMove === "answer_fact" || userMove === "remember" || userMove === "repair",
+    expected_keywords: extractDialogueKeywords(input, conversation),
+    memory_expected: userMove === "remember",
+    correction_expected: userMove === "repair",
+    follow_up_limit: voiceMode || userMove === "continue" ? 1 : 1,
+    max_shape: voiceMode ? "1-2 short spoken sentences" : "1-3 compact chat paragraphs",
+    must_do: mustDo,
+    must_not: mustNot,
+    quality_gate: [
+      "actual_question_answered",
+      "relevant_memory_used_when_needed",
+      "facts_not_replaced_by_comfort",
+      "natural_not_customer_service",
+      "no_repeated_default_template"
+    ],
+    uncertainty_policy: "If the answer depends on missing external data, say that plainly and ask for one concrete clue instead of guessing."
+  };
+}
+
 function buildResponsePlan(conversation, emotionState = conversation?.emotion_state || {}) {
   const intent = inferUserIntentForPlan(conversation);
   const companionMode = conversation?.lover_profile?.companion_mode || "casual_chat";
   const voiceMode = conversation?.voice_mode === true || conversation?.input_channel === "voice" || conversation?.output_channel === "voice";
   const voiceSession = parseJsonObject(conversation?.voice_session);
   const toneIntelligence = buildToneIntelligencePlan(conversation, intent, emotionState, voiceMode);
+  const dialogueContract = buildDialogueContract(conversation, intent, emotionState, voiceMode);
   const memoryContext = conversation?.memory_context || {};
   const selectedMemories = [
     ...(memoryContext.stable_profile || []),
@@ -2507,6 +2601,7 @@ function buildResponsePlan(conversation, emotionState = conversation?.emotion_st
     user_intent: intent,
     conversation_action: toneIntelligence.conversation_action,
     tone_intelligence: toneIntelligence,
+    dialogue_contract: dialogueContract,
     conversation_mode: companionMode,
     relevant_memories: selectedMemories.slice(0, 6),
     response_strategy: responseStrategyForPlan(intent, emotionState),
@@ -3766,6 +3861,82 @@ function toneSelfCheckIssues(reply, conversation, safety) {
   return issues;
 }
 
+function replyMentionsAnyKeyword(reply, keywords) {
+  const text = normalizeMemoryText(reply);
+  return (keywords || []).some(keyword => {
+    const normalized = normalizeMemoryText(keyword);
+    return normalized.length >= 2 && text.includes(normalized);
+  });
+}
+
+function isDialogueTemplateFailure(text) {
+  return /我在。你剛剛那句我收到了|我會先接住|不急著替你下結論|你願意多說一點|卡住你的地方在哪裡|這種剛發生的片段很值得先放慢|可以先用很生活的方式理解/.test(text);
+}
+
+function dialogueQualityIssues(reply, conversation, safety) {
+  const text = cleanText(reply, 2000);
+  const input = cleanText(conversation?.user_input || "", 1000);
+  const contract = conversation?.response_plan?.dialogue_contract || {};
+  const issues = [];
+  if (!text) return ["empty_reply"];
+  if (isDialogueTemplateFailure(text)) issues.push("template_answer");
+  if (contract.must_answer_first && isDialogueTemplateFailure(text)) issues.push("missed_primary_move");
+  if (wantsDirectFactAnswer(input, conversation) && safety === "normal") {
+    const keywords = contract.expected_keywords || extractDialogueKeywords(input, conversation);
+    const hasUsefulFallback = /沒有拿到足夠可靠|不想亂猜|需要更明確|我先查|資料不足|查不到/.test(text);
+    if (keywords.length && !replyMentionsAnyKeyword(text, keywords) && !hasUsefulFallback) {
+      issues.push("fact_keyword_missing");
+    }
+    if (/我在。|先接住|卡住你的地方|願意多說一點/.test(text) && !/是|指|代表|目前|最近|新聞|資料/.test(text)) {
+      issues.push("fact_replaced_by_comfort");
+    }
+  }
+  if ((isMemoryRecallQuestion(input) || isAskingCurrentUserName(input)) && safety === "normal") {
+    const required = requiredMemoryTokenForRepair(input, conversation);
+    if (required && !normalizeMemoryText(text).includes(normalizeMemoryText(required))) issues.push("memory_detail_missing");
+    if (normalizeMemoryText(text).includes(normalizeMemoryText(input).slice(0, 24))) issues.push("memory_echoed_question");
+  }
+  if (isCorrectionMove(input) && !/對|是我|我剛剛|修正|更正|你說得對|我聽錯|看錯|抓錯|不是/.test(text)) {
+    issues.push("correction_not_repaired");
+  }
+  if (/不要把我分類|不要分類|像朋友|不要像客服|不要像機器/.test(input) && /分類|模式|層|指標|系統|我可以協助|以下|首先|接下來/.test(text)) {
+    issues.push("too_systemized");
+  }
+  if (isShortAcknowledgement(input) && /你願意多說一點|卡住你的地方|你想從哪裡開始|你剛剛那句/.test(text)) {
+    issues.push("short_ack_restart");
+  }
+  if (isNearDuplicateReply(text, conversation)) issues.push("near_duplicate");
+  return [...new Set(issues)];
+}
+
+function applyDialogueQualityGate(reply, conversation, safety, fallbackReply) {
+  const issues = dialogueQualityIssues(reply, conversation, safety);
+  if (!issues.length) return reply;
+  const input = cleanText(conversation?.user_input || "", 1000);
+  const userName = conversation?.lover_profile?.user_name || "你";
+  const nameReply = namingReplyFor(conversation, input, userName);
+  if (nameReply && !dialogueQualityIssues(nameReply, conversation, safety).length) return nameReply;
+  const recallReply = memoryRecallReply(conversation, input, userName);
+  if (recallReply && !dialogueQualityIssues(recallReply, conversation, safety).length) return recallReply;
+  const fallback = cleanText(fallbackReply, 2000) || reply;
+  const fallbackIssues = dialogueQualityIssues(fallback, conversation, safety);
+  if (fallback && fallbackIssues.length < issues.length) return fallback;
+  if (issues.includes("fact_keyword_missing") || issues.includes("fact_replaced_by_comfort")) {
+    const query = cleanText(conversation?.lookup_query || extractLookupQuery(input) || input, 80);
+    return query
+      ? `${userName}，這題我不能用安慰模板混過去。關於「${query}」，我需要可靠資料才會講得準；目前我會先保留不亂猜，你可以給我一個連結、英文名或地點年份，我再接著查。`
+      : `${userName}，這題我應該先回答事實，不該只安慰你。你把關鍵名詞再丟一次，我會先查清楚再講。`;
+  }
+  if (issues.includes("correction_not_repaired")) {
+    return `${userName}，你說得對，我剛剛抓錯重點了。這輪我先照你修正後的說法接，不再沿用前一個錯的理解。`;
+  }
+  if (issues.includes("short_ack_restart")) {
+    const topic = inferRecentTopic(conversation);
+    return topic ? `${userName}，好，我們就接著 ${topic} 這條線，不重新問一輪。` : `${userName}，好，我接著你剛剛那個脈絡，不重新開問卷。`;
+  }
+  return reply;
+}
+
 function applyToneSelfCheck(reply, conversation, safety, fallbackReply) {
   const voiceMode = conversation?.voice_mode === true || conversation?.input_channel === "voice" || conversation?.output_channel === "voice";
   let next = String(reply || "").trim();
@@ -3822,9 +3993,10 @@ function normalizeProviderResult(result, conversation) {
   const candidateReply = safetyOverrodeModel ? fallbackReply : (typeof rawReply === "string" && rawReply.trim() ? rawReply.trim() : fallbackReply);
   const repairedReply = providerReplyNeedsRepair(candidateReply, conversation, safety) ? fallbackReply : candidateReply;
   const toneCheckedReply = applyToneSelfCheck(repairedReply, conversation, safety, fallbackReply);
-  const finalReply = isNearDuplicateReply(toneCheckedReply, conversation)
+  const dialogueCheckedReply = applyDialogueQualityGate(toneCheckedReply, conversation, safety, fallbackReply);
+  const finalReply = isNearDuplicateReply(dialogueCheckedReply, conversation)
     ? applyToneSelfCheck(fallbackReply, conversation, safety, fallbackReply)
-    : toneCheckedReply;
+    : dialogueCheckedReply;
   return {
     reply: finalReply,
     emotion,

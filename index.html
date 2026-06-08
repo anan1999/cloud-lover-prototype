@@ -424,6 +424,12 @@
               <option value="en-US">en-US</option>
             </select>
           </label>
+          <label for="voiceNameSelect">聲音
+            <select id="voiceNameSelect">
+              <option value="">自動選擇</option>
+            </select>
+          </label>
+          <button class="ghost" id="voicePreviewBtn" type="button">試聽</button>
         </div>
         <div class="voice-note" id="voiceStatus">語音輸入是選用功能；麥克風權限由瀏覽器控制。</div>
         <div class="voice-preview hidden" id="voicePreview"></div>
@@ -578,9 +584,11 @@
         finalTranscript: "",
         interimTranscript: "",
         enableVoiceReply: false,
-        rate: 1,
-        pitch: 1,
+        rate: 0.92,
+        pitch: 1.02,
         preferredVoiceLang: "zh-TW",
+        preferredVoiceName: "",
+        speakingToken: 0,
         cancelCount: 0,
         support: { speech_recognition_supported: false, speech_synthesis_supported: false }
       }
@@ -636,6 +644,8 @@
       voiceRateInput: document.querySelector("#voiceRateInput"),
       voicePitchInput: document.querySelector("#voicePitchInput"),
       voiceLangSelect: document.querySelector("#voiceLangSelect"),
+      voiceNameSelect: document.querySelector("#voiceNameSelect"),
+      voicePreviewBtn: document.querySelector("#voicePreviewBtn"),
       voiceStatus: document.querySelector("#voiceStatus"),
       voicePreview: document.querySelector("#voicePreview")
     };
@@ -643,6 +653,8 @@
     const voiceUtils = window.SamanthaVoiceUtils || {
       cleanSpeechText: text => String(text || ""),
       chooseVoice: voices => (voices || [])[0] || null,
+      sortedVoices: voices => voices || [],
+      splitSpeechText: text => [String(text || "")],
       getSpeechRecognitionCtor: win => win.SpeechRecognition || win.webkitSpeechRecognition || null,
       getVoiceSupport: win => ({
         speech_recognition_supported: Boolean(win.SpeechRecognition || win.webkitSpeechRecognition),
@@ -749,6 +761,7 @@
               voice_session_service: voiceMode ? "browser_native" : "",
               ready: voiceMode,
               preferred_voice_lang: state.voice.preferredVoiceLang,
+              preferred_voice_name: state.voice.preferredVoiceName,
               voice_rate: state.voice.rate,
               voice_pitch: state.voice.pitch,
               enable_voice_reply: state.voice.enableVoiceReply,
@@ -1084,9 +1097,10 @@
       try {
         const saved = JSON.parse(localStorage.getItem("samantha_voice_settings") || "{}");
         state.voice.enableVoiceReply = saved.enable_voice_reply === true;
-        state.voice.rate = Number.isFinite(Number(saved.voice_rate)) ? Number(saved.voice_rate) : 1;
-        state.voice.pitch = Number.isFinite(Number(saved.voice_pitch)) ? Number(saved.voice_pitch) : 1;
+        state.voice.rate = Number.isFinite(Number(saved.voice_rate)) ? Number(saved.voice_rate) : 0.92;
+        state.voice.pitch = Number.isFinite(Number(saved.voice_pitch)) ? Number(saved.voice_pitch) : 1.02;
         state.voice.preferredVoiceLang = saved.preferred_voice_lang || "zh-TW";
+        state.voice.preferredVoiceName = saved.preferred_voice_name || "";
         state.voice.cancelCount = Number.isFinite(Number(saved.speech_cancel_count)) ? Number(saved.speech_cancel_count) : 0;
       } catch {
         state.voice.enableVoiceReply = false;
@@ -1096,6 +1110,7 @@
       dom.voiceRateInput.value = String(state.voice.rate);
       dom.voicePitchInput.value = String(state.voice.pitch);
       dom.voiceLangSelect.value = state.voice.preferredVoiceLang;
+      populateVoiceOptions();
       renderVoiceStatus();
     }
 
@@ -1106,9 +1121,44 @@
           voice_rate: state.voice.rate,
           voice_pitch: state.voice.pitch,
           preferred_voice_lang: state.voice.preferredVoiceLang,
+          preferred_voice_name: state.voice.preferredVoiceName,
           speech_cancel_count: state.voice.cancelCount
         }));
       } catch {}
+    }
+
+    function getAvailableVoices() {
+      return state.voice.support.speech_synthesis_supported
+        ? window.speechSynthesis.getVoices()
+        : [];
+    }
+
+    function populateVoiceOptions() {
+      if (!dom.voiceNameSelect) return;
+      const voices = voiceUtils.sortedVoices(getAvailableVoices(), state.voice.preferredVoiceLang, state.voice.preferredVoiceName);
+      const current = state.voice.preferredVoiceName;
+      dom.voiceNameSelect.innerHTML = "";
+      const auto = document.createElement("option");
+      auto.value = "";
+      auto.textContent = "自動選擇";
+      dom.voiceNameSelect.appendChild(auto);
+      voices.slice(0, 30).forEach(voice => {
+        const option = document.createElement("option");
+        option.value = voice.name;
+        option.textContent = `${voice.name} · ${voice.lang || "unknown"}`;
+        dom.voiceNameSelect.appendChild(option);
+      });
+      dom.voiceNameSelect.value = voices.some(voice => voice.name === current) ? current : "";
+    }
+
+    function selectedSpeechVoice() {
+      return voiceUtils.chooseVoice(getAvailableVoices(), state.voice.preferredVoiceLang, state.voice.preferredVoiceName);
+    }
+
+    function selectedVoiceLabel() {
+      const voice = selectedSpeechVoice();
+      if (!state.voice.support.speech_synthesis_supported) return "";
+      return voice ? ` 目前聲音：${voice.name}（${voice.lang || "unknown"}）。` : " 尚未載入可用聲音。";
     }
 
     function renderVoiceStatus(message = "") {
@@ -1119,7 +1169,7 @@
         ? "語音輸入是選用功能；麥克風權限由瀏覽器控制，不會儲存原始音訊。"
         : "這個瀏覽器暫不支援內建語音輸入；文字聊天仍可正常使用。";
       const tts = support.speech_synthesis_supported ? "" : " 此瀏覽器也不支援內建朗讀。";
-      dom.voiceStatus.textContent = message || `${base}${tts}`;
+      dom.voiceStatus.textContent = message || `${base}${tts}${selectedVoiceLabel()}`;
     }
 
     function renderVoicePreview() {
@@ -1130,15 +1180,33 @@
 
     function cancelSpeech(reason = "user") {
       if (!state.voice.support.speech_synthesis_supported) return;
+      state.voice.speakingToken += 1;
       if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
         window.speechSynthesis.cancel();
-        state.voice.cancelCount += 1;
-        saveVoiceSettings();
+        if (reason === "user") {
+          state.voice.cancelCount += 1;
+          saveVoiceSettings();
+        }
         if (reason === "user") renderVoiceStatus("已停止 Samantha 的語音回覆。");
       }
     }
 
-    function speakReply(text) {
+    function speakChunk(chunk, token) {
+      return new Promise(resolve => {
+        if (!chunk || token !== state.voice.speakingToken) return resolve();
+        const utterance = new SpeechSynthesisUtterance(chunk);
+        utterance.lang = state.voice.preferredVoiceLang || "zh-TW";
+        utterance.rate = Math.max(0.75, Math.min(Number(state.voice.rate || 0.92), 1.35));
+        utterance.pitch = Math.max(0.75, Math.min(Number(state.voice.pitch || 1.02), 1.25));
+        const voice = selectedSpeechVoice();
+        if (voice) utterance.voice = voice;
+        utterance.onend = resolve;
+        utterance.onerror = resolve;
+        window.speechSynthesis.speak(utterance);
+      });
+    }
+
+    async function speakReply(text, options = {}) {
       if (!state.voice.enableVoiceReply) return;
       if (!state.voice.support.speech_synthesis_supported) {
         renderVoiceStatus("這個瀏覽器暫不支援內建朗讀；文字回覆仍會顯示。");
@@ -1147,16 +1215,16 @@
       const cleaned = voiceUtils.cleanSpeechText(text);
       if (!cleaned) return;
       cancelSpeech("replace");
-      const utterance = new SpeechSynthesisUtterance(cleaned);
-      utterance.lang = state.voice.preferredVoiceLang || "zh-TW";
-      utterance.rate = state.voice.rate || 1;
-      utterance.pitch = state.voice.pitch || 1;
-      const voice = voiceUtils.chooseVoice(window.speechSynthesis.getVoices(), state.voice.preferredVoiceLang);
-      if (voice) utterance.voice = voice;
-      utterance.onstart = () => renderVoiceStatus("Samantha 正在朗讀回覆。");
-      utterance.onend = () => renderVoiceStatus();
-      utterance.onerror = () => renderVoiceStatus("朗讀被瀏覽器中斷；文字回覆仍可閱讀。");
-      window.speechSynthesis.speak(utterance);
+      const token = state.voice.speakingToken;
+      const chunks = voiceUtils.splitSpeechText(cleaned, 86);
+      const previewMode = options.preview === true;
+      renderVoiceStatus(previewMode ? "正在試聽 Samantha 的聲音。" : "Samantha 正在朗讀回覆。");
+      for (const [index, chunk] of chunks.entries()) {
+        if (token !== state.voice.speakingToken) return;
+        await speakChunk(chunk, token);
+        if (index < chunks.length - 1) await delay(90);
+      }
+      if (token === state.voice.speakingToken) renderVoiceStatus();
     }
 
     function startVoiceRecognition() {
@@ -1320,10 +1388,28 @@
     });
     dom.voiceLangSelect.addEventListener("change", event => {
       state.voice.preferredVoiceLang = event.target.value || "zh-TW";
+      state.voice.preferredVoiceName = "";
+      populateVoiceOptions();
       saveVoiceSettings();
       renderVoiceStatus();
     });
-    if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = () => renderVoiceStatus();
+    dom.voiceNameSelect.addEventListener("change", event => {
+      state.voice.preferredVoiceName = event.target.value || "";
+      saveVoiceSettings();
+      renderVoiceStatus();
+    });
+    dom.voicePreviewBtn.addEventListener("click", () => {
+      const wasEnabled = state.voice.enableVoiceReply;
+      state.voice.enableVoiceReply = true;
+      speakReply("你好，我是 Samantha。這個聲音聽起來如果太快或太硬，你可以換一個聲音，或把語速再放慢一點。", { preview: true })
+        .finally(() => {
+          state.voice.enableVoiceReply = wasEnabled;
+        });
+    });
+    if (window.speechSynthesis) window.speechSynthesis.onvoiceschanged = () => {
+      populateVoiceOptions();
+      renderVoiceStatus();
+    };
     document.querySelectorAll("[data-prompt]").forEach(button => button.addEventListener("click", () => send(button.dataset.prompt)));
     document.querySelector("#nameInput").addEventListener("input", event => {
       state.loverName = event.target.value.trim() || "Samantha";

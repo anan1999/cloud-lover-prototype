@@ -39,6 +39,13 @@ function run() {
     { name: "Taiwan Mandarin", lang: "zh-TW" }
   ], "zh-TW");
   assert.equal(selectedVoice.lang, "zh-TW");
+  const preferredVoice = voiceUtils.chooseVoice([
+    { name: "Basic Chinese", lang: "zh-TW" },
+    { name: "Microsoft HsiaoChen Online Natural", lang: "zh-TW" }
+  ], "zh-TW", "Microsoft HsiaoChen Online Natural");
+  assert.equal(preferredVoice.name, "Microsoft HsiaoChen Online Natural");
+  const voiceChunks = voiceUtils.splitSpeechText("第一句。第二句很長但還是應該分開播放，聽起來比較不像機器一口氣把整段全部唸完。", 20);
+  assert.ok(voiceChunks.length >= 2);
 
   const speechText = voiceUtils.cleanSpeechText([
     "# Title",
@@ -56,12 +63,17 @@ function run() {
 
   assertIncludes(indexHtml, "id=\"micBtn\"", "index.html");
   assertIncludes(indexHtml, "id=\"voiceReplyToggle\"", "index.html");
+  assertIncludes(indexHtml, "id=\"voiceNameSelect\"", "index.html");
+  assertIncludes(indexHtml, "id=\"voicePreviewBtn\"", "index.html");
   assertIncludes(indexHtml, "voice_mode: voiceMode", "index.html");
   assertIncludes(indexHtml, "input_channel: inputChannel", "index.html");
   assertIncludes(indexHtml, "output_channel: outputChannel", "index.html");
   assertIncludes(indexHtml, "speech_recognition_supported", "index.html");
   assertIncludes(indexHtml, "speech_synthesis_supported", "index.html");
   assertIncludes(indexHtml, "speech_cancel_count", "index.html");
+  assertIncludes(indexHtml, "preferred_voice_name", "index.html");
+  assertIncludes(indexHtml, "populateVoiceOptions", "index.html");
+  assertIncludes(indexHtml, "splitSpeechText", "index.html");
   assertIncludes(indexHtml, "localStorage", "index.html");
   assertIncludes(indexHtml, "speechSynthesis.cancel()", "index.html");
   assertIncludes(indexHtml, "renderVoiceStatus(\"這個瀏覽器暫不支援內建語音輸入；你可以繼續打字。\")", "index.html");
@@ -69,9 +81,14 @@ function run() {
   assertIncludes(voiceUtilsSource, "SpeechRecognition", "voice-utils.js");
   assertIncludes(voiceUtilsSource, "webkitSpeechRecognition", "voice-utils.js");
   assertIncludes(voiceUtilsSource, "cleanSpeechText", "voice-utils.js");
+  assertIncludes(voiceUtilsSource, "voiceScore", "voice-utils.js");
+  assertIncludes(voiceUtilsSource, "sortedVoices", "voice-utils.js");
+  assertIncludes(voiceUtilsSource, "splitSpeechText", "voice-utils.js");
 
   assertIncludes(serverJs, "short_spoken_reply", "server.js");
   assertIncludes(serverJs, "voice_telemetry", "server.js");
+  assertIncludes(serverJs, "dialogue_contract", "server.js");
+  assertIncludes(serverJs, "applyDialogueQualityGate", "server.js");
   assertIncludes(serverJs, "EVALUATION_SCENARIOS.voice_lab", "server.js");
   assertIncludes(serverJs, "voice_reply_too_long", "server.js");
   assertIncludes(serverJs, "voice_template_tone", "server.js");

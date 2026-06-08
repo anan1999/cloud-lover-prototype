@@ -97,6 +97,7 @@ Before provider routing, the backend builds a private `response_plan`:
 - user intent
 - conversation action
 - tone intelligence plan
+- dialogue contract
 - conversation mode
 - relevant memories
 - response strategy
@@ -109,6 +110,8 @@ Before provider routing, the backend builds a private `response_plan`:
 This is not shown to the user. It is prompt guidance that keeps Samantha from answering factual questions with comfort templates, overusing memory, or turning every message into a feature menu.
 
 The `tone_intelligence` layer chooses a concrete conversation action before generation, such as `answer_directly`, `soft_acknowledge`, `continue_topic`, `repair_misunderstanding`, `recall_memory`, `ground_with_fact`, `small_practical_step`, `proactive_topic`, or `stop_and_leave_space`. After a provider returns, the backend applies a lightweight tone self-check that removes common customer-service phrasing, report tone, markdown leakage in voice mode, and overlong spoken replies. Evaluation metrics include `action_fit_score` so the dashboard can show whether Samantha picked the right conversational move, not only whether the answer was warm.
+
+The `dialogue_contract` layer is a stronger turn-level agreement. It identifies whether the user move is `answer_fact`, `remember`, `repair`, `continue`, or emotional support; lists what must be answered first; and records keywords or memory details that should appear. After the provider returns, `applyDialogueQualityGate` checks for common failures before the reply is sent: fact questions that became comfort, memory questions that echo the current question, corrections that were not repaired, short acknowledgements that restart the conversation, over-systemized replies, and near duplicates. If a reply fails the gate, Samantha falls back to the safest local repair rather than asking the user to correct the same problem again.
 
 ## Memory Management
 

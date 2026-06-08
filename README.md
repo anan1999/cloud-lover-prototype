@@ -121,16 +121,17 @@ Memory management:
 Private response planning:
 
 - Each reply builds a private `response_plan` before provider routing.
-- The plan tracks emotion, intent, conversation action, tone intelligence, mode, selected memories, strategy, follow-up choice, whether to listen first or advise, and safety notes.
+- The plan tracks emotion, intent, conversation action, tone intelligence, dialogue contract, mode, selected memories, strategy, follow-up choice, whether to listen first or advise, and safety notes.
 - The model is told not to reveal these labels. They are scaffolding for more natural continuity.
-- A post-generation tone self-check removes common customer-service phrasing, report tone, markdown leakage in voice mode, and overlong spoken replies.
+- A post-generation dialogue and tone self-check blocks common failures such as fact questions becoming comfort templates, memory questions echoing the question, corrections not being repaired, customer-service phrasing, report tone, markdown leakage in voice mode, and overlong spoken replies.
 
 Voice-lite MVP:
 
 - The chat UI now includes optional browser-native speech input and Samantha voice reply.
 - Speech input uses `SpeechRecognition` / `webkitSpeechRecognition` when available; unsupported browsers fall back to text chat.
 - Voice reply uses `window.speechSynthesis`, strips markdown/code blocks before speaking, and can be cancelled.
-- Voice settings live in `localStorage`: `enable_voice_reply`, `voice_rate`, `voice_pitch`, and `preferred_voice_lang`.
+- Voice settings live in `localStorage`: `enable_voice_reply`, `voice_rate`, `voice_pitch`, `preferred_voice_lang`, and `preferred_voice_name`.
+- The UI ranks browser voices, lets the user choose a voice, previews it, uses gentler default rate/pitch, and plays replies sentence by sentence so browser TTS sounds less robotic.
 - Chat payloads include `input_channel`, `output_channel`, `voice_mode`, and `voice_session` metadata.
 - Raw audio is not stored; only the final transcript is sent as a normal user message.
 - Admin dashboard includes Voice Lab, a transcript-based voice test bot that scores spoken reply length, markdown/list leakage, and playback quality with browser TTS.
